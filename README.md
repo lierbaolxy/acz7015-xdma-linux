@@ -55,13 +55,21 @@ Windows PC读取DDR → 显示鼠标事件
 物理地址：0x20000000（reserved-memory 区域）
 
 ```
-偏移  字段      大小    说明
-0x00  seq       4字节   序号（每次事件+1）
-0x04  type      4字节   事件类型（EV_REL=2/EV_KEY=1）
-0x08  code      4字节   代码（X轴=0/Y轴=1/左键=0x110/右键=0x111/中键=0x112）
-0x0C  value     4字节   值（有符号int32，移动距离或按键状态）
-0x10  tv_sec    4字节   开发板时间戳（秒）
-0x14  tv_nsec   4字节   开发板时间戳（纳秒）
+偏移  字段        大小    说明
+0x00  seq         4字节   序号（每次事件+1，PC端检测变化）
+0x04  device_id   4字节   接口类型: 0=USB 1=CAN 2=PS2 3=RS422
+0x08  data_len    4字节   有效数据长度
+0x0C  reserved    4字节   保留对齐
+0x10  data[8]     8字节   原始数据（USB: input_event{type,code,value}共8字节）
+0x18  tv_sec      4字节   开发板时间戳（秒）
+0x1C  tv_nsec     4字节   开发板时间戳（纳秒）
+合计              32字节  对齐cache line
+
+四路接口槽位布局：
+0x20000000: USB槽位   (32字节)
+0x20000020: CAN槽位   (32字节)
+0x20000040: PS2槽位   (32字节)
+0x20000060: RS422槽位 (32字节)
 ```
 
 ## PC 端 XDMA 设备节点
