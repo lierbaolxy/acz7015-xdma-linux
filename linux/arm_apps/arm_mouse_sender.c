@@ -99,7 +99,33 @@ int main(int argc, char *argv[])
     struct input_event ev;
     struct pollfd pfd;
     uint32_t seq = 0;
-    const char *input_dev = "/dev/input/event1";
+    const char *input_dev = "/dev/input/event0";  /* 默认鼠标设备 */
+
+    /* --help 参数说明 */
+    if (argc > 1 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+        printf("=== USB鼠标数据发送程序 V2（协议标准格式）===\n\n");
+        printf("用法: sudo %s [选项] [设备路径]\n\n", argv[0]);
+        printf("选项:\n");
+        printf("  -h, --help    显示此帮助信息并退出\n\n");
+        printf("参数:\n");
+        printf("  设备路径       鼠标input设备路径（默认: %s）\n\n", input_dev);
+        printf("功能:\n");
+        printf("  采集USB鼠标事件（移动/按键/滚轮），写入DDR共享内存\n");
+        printf("  通过XDMA DMA传输到PC端（c2h_0设备节点读取）\n\n");
+        printf("DDR槽位格式（32字节，符合协议规范）:\n");
+        printf("  0x20000000: USB槽位（device_id=0）\n");
+        printf("  0x20000020: CAN槽位（预留，device_id=1）\n");
+        printf("  0x20000040: PS2槽位（预留，device_id=2）\n");
+        printf("  0x20000060: RS422槽位（预留，device_id=3）\n\n");
+        printf("查找鼠标设备:\n");
+        printf("  cat /proc/bus/input/devices | grep -A6 'Usb Mouse'\n");
+        printf("  查看 Handlers=eventX 的X值\n\n");
+        printf("示例:\n");
+        printf("  sudo %s                          # 使用默认设备 %s\n", argv[0], input_dev);
+        printf("  sudo %s /dev/input/event0        # 指定设备\n", argv[0]);
+        printf("  sudo %s /dev/input/event2        # 其他设备号\n", argv[0]);
+        return 0;
+    }
 
     if (argc > 1)
         input_dev = argv[1];
