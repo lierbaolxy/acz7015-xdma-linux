@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-PC Windows侧：USB鼠标数据接收程序
-功能：通过XDMA轮询读取DDR共享内存，检测鼠标事件并显示
-运行：python win_mouse_receiver.py
+PC Windows侧：USB鼠标数据接收程序（协议标准格式V2）
+
+改动说明（V1→V2）：
+  - 读取32字节统一槽位格式（原24字节）
+  - 解析device_id区分USB/CAN/PS2/RS422四路接口
+  - USB数据从data字段解析input_event（type+code+value）
+  - 兼容后续CAN/PS2/RS422接口扩展
+
+协议依据：d:\workspace\trae\day01\0702\protocol_spec.md
+  - 统一槽位：{seq,device_id,data_len,reserved,data[8],tv_sec,tv_nsec} 32字节
+  - USB槽位地址：0x20000000
 
 依赖：Xilinx XDMA Windows驱动已安装
 """
@@ -12,12 +20,25 @@ import struct
 import sys
 import time
 
-# DDR共享内存物理地址
+# ===== DDR共享内存配置（和arm_mouse_sender.c V2一致）=====
 DDR_BASE = 0x20000000
 
-# 共享内存结构偏移（和arm_mouse_sender.c一致）
-# OFF_SEQ=0x00, OFF_TYPE=0x04, OFF_CODE=0x08, OFF_VALUE=0x0C, OFF_TV_SEC=0x10, OFF_TV_NSEC=0x14
-DMA_BUF_SIZE = 24  # 6个32位字段
+# 统一槽位格式：32字节（对齐cache line）
+# OFF_SEQ=0x00, OFF_DEV=0x04, OFF_LEN=0x08, OFF_RES=0x0C, OFF_DATA=0x10, OFF_SEC=0x18, OFF_NSEC=0x1C
+SLOT_SIZE = 32
+
+# 四路接口槽位偏移（每路32字节）
+SLOT_USB   = 0x00
+SLOT_CAN   = 0x20
+SLOT_PS2   = 0x40
+SLOT_RS422 = 0x60
+
+# 接口类型标识
+DEV_USB    = 0
+DEV_CAN    = 1
+DEV_PS2    = 2
+DEV_RS422  = 3
+DEV_NAMES = {DEV_USB: "USB", DEV_CAN: "CAN", DEV_PS2: "PS2", DEV_RS422: "RS422"}
 
 # Linux input事件类型
 EV_SYN = 0x00
@@ -75,22 +96,35 @@ def open_xdma_c2h(base_path):
     return handle if handle != INVALID_HANDLE_VALUE else None
 
 
-def read_ddr(handle):
-    """从DDR读取24字节共享内存数据"""
-    buf = (ctypes.c_ubyte * DMA_BUF_SIZE)()
+def read_slot(handle, slot_offset):
+    """从DDR读取指定槽位数据（读64字节满足XDMA对齐，解析前32字节）"""
+    buf = (ctypes.c_ubyte * 64)()
     bytes_read = wintypes.DWORD(0)
-    kernel32.SetFilePointerEx(handle, DDR_BASE, None, 0)
-    if not kernel32.ReadFile(handle, buf, DMA_BUF_SIZE, ctypes.byref(bytes_read), None):
+    kernel32.SetFilePointerEx(handle, DDR_BASE + slot_offset, None, 0)
+    if not kernel32.ReadFile(handle, buf, 64, ctypes.byref(bytes_read), None):
         return None
-    return bytes(buf[:bytes_read.value])
+    if bytes_read.value < SLOT_SIZE:
+        return None
+    return bytes(buf[:SLOT_SIZE])  # 只返回前32字节供解析
 
 
-def parse_data(data):
-    """解析DDR数据，返回(seq, type, code, value, tv_sec, tv_nsec)"""
-    if data is None or len(data) < 24:
+def parse_slot(data):
+    """解析32字节槽位，返回(seq,device_id,data_len,data,sec,nsec)"""
+    if data is None or len(data) < SLOT_SIZE:
         return None
-    # value用有符号int32（鼠标位移可为负），其余无符号
-    return struct.unpack_from('<IIIiII', data, 0)
+    seq, dev_id, dlen, _res = struct.unpack_from('<IIII', data, 0)
+    data_payload = data[0x10:0x18]  # 8字节
+    tv_sec, tv_nsec = struct.unpack_from('<II', data, 0x18)
+    return seq, dev_id, dlen, data_payload, tv_sec, tv_nsec
+
+
+def parse_usb_event(data_payload):
+    """从USB data字段解析input_event: type(2B)+code(2B)+value(4B)"""
+    if len(data_payload) < 8:
+        return None
+    typ, code = struct.unpack_from('<HH', data_payload, 0)
+    value = struct.unpack_from('<i', data_payload, 4)[0]
+    return typ, code, value
 
 
 def ev_type_name(typ):
@@ -118,8 +152,27 @@ def format_value(typ, code, val):
     return str(val)
 
 
+def format_payload(dev_id, data_payload, dlen):
+    """根据device_id格式化data字段显示"""
+    if dev_id == DEV_USB:
+        parsed = parse_usb_event(data_payload)
+        if parsed:
+            typ, code, val = parsed
+            return f"{ev_type_name(typ)} {ev_code_name(typ, code)}={format_value(typ, code, val)}"
+    elif dev_id == DEV_CAN:
+        # CAN帧数据（原始字节）
+        return f"CAN帧[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
+    elif dev_id == DEV_PS2:
+        # PS2扫描码
+        return f"PS2[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
+    elif dev_id == DEV_RS422:
+        # RS422报文
+        return f"RS422[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
+    return f"未知[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
+
+
 def main():
-    print("=== PC端鼠标数据接收程序 ===\n")
+    print("=== PC端数据接收程序 V2（协议标准格式）===\n")
 
     # 查找XDMA设备
     print("查找XDMA设备...")
@@ -138,43 +191,43 @@ def main():
         return 1
     print("C2H设备打开成功\n")
 
-    # 读初始序号
+    # 读USB槽位初始序号
     last_seq = 0
-    data = read_ddr(h_c2h)
+    data = read_slot(h_c2h, SLOT_USB)
     if data:
-        parsed = parse_data(data)
+        parsed = parse_slot(data)
         if parsed:
             last_seq = parsed[0]
-            print(f"初始序号: {last_seq}")
+            print(f"USB槽位初始序号: {last_seq}")
 
     count = 0
     # 时钟偏差校准值（首次收到事件时自动设置基准）
     clock_offset = None
 
-    print("等待鼠标事件... (动鼠标试试，Ctrl+C退出)\n")
-    print("序号    | 类型 | 代码  | 值   | 延时(us) | 开发板时间戳")
-    print("-" * 70)
+    print("等待事件... (动鼠标试试，Ctrl+C退出)\n")
+    print("序号    | 接口 | 数据内容                    | 延时(us) | 开发板时间戳")
+    print("-" * 80)
 
     try:
         while True:
-            data = read_ddr(h_c2h)
+            # 轮询USB槽位
+            data = read_slot(h_c2h, SLOT_USB)
             if data is None:
                 continue
 
-            parsed = parse_data(data)
+            parsed = parse_slot(data)
             if parsed is None:
                 continue
 
-            seq, typ, code, val, tv_sec, tv_nsec = parsed
+            seq, dev_id, dlen, data_payload, tv_sec, tv_nsec = parsed
 
             # 检测序号变化
             if seq != last_seq:
                 last_seq = seq
                 if seq > 0:
                     count += 1
-                    type_str = ev_type_name(typ)
-                    code_str = ev_code_name(typ, code)
-                    val_str = format_value(typ, code, val)
+                    dev_str = DEV_NAMES.get(dev_id, f"?{dev_id}")
+                    payload_str = format_payload(dev_id, data_payload, dlen)
 
                     # PC收到时间（Unix时间戳，秒）
                     pc_time = time.time()
@@ -189,10 +242,10 @@ def main():
                     latency_us = (pc_time - arm_time - clock_offset) * 1e6
 
                     ts_str = f"{tv_sec}.{tv_nsec // 1000000:03d}"
-                    print(f"#{seq:<6d}| {type_str:<4s} | {code_str:<5s} | {val_str:<5s} | {latency_us:8.0f} | {ts_str}")
+                    print(f"#{seq:<6d}| {dev_str:<4s} | {payload_str:<27s} | {latency_us:8.0f} | {ts_str}")
 
     except KeyboardInterrupt:
-        print(f"\n\n退出，共收到 {count} 个鼠标事件")
+        print(f"\n\n退出，共收到 {count} 个事件")
 
     kernel32.CloseHandle(h_c2h)
     return 0
