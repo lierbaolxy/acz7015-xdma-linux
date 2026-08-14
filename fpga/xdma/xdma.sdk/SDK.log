@@ -1,0 +1,9 @@
+21:42:13 INFO  : Registering command handlers for SDK TCF services
+21:42:15 INFO  : Launching XSCT server: xsct.bat -interactive G:\fpga\0708\0810\xdma\xdma\xdma.sdk\temp_xsdb_launch_script.tcl
+21:42:19 INFO  : XSCT server has started successfully.
+21:42:26 INFO  : Successfully done setting XSCT server connection channel  
+21:42:26 INFO  : Successfully done setting SDK workspace  
+21:42:26 INFO  : Processing command line option -hwspec G:/fpga/0708/0810/xdma/xdma/xdma.sdk/design_1_wrapper.hdf.
+21:44:40 INFO  : Invoking Bootgen: bootgen -image fsbl.bif -arch zynq -o G:\fpga\0708\0810\xdma\xdma\xdma.sdk\fsbl\bootimage\BOOT.bin
+21:44:40 INFO  : Creating new bif file G:\fpga\0708\0810\xdma\xdma\xdma.sdk\fsbl\bootimage\fsbl.bif
+21:44:42 INFO  : Bootgen command execution is done.
