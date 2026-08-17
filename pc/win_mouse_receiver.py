@@ -13,12 +13,18 @@ PC Windows侧：USB鼠标数据接收程序（协议标准格式V2）
   - USB槽位地址：0x20000000
 
 依赖：Xilinx XDMA Windows驱动已安装
+
+Ctrl+C退出说明：
+  - 用独立线程做同步ReadFile（XDMA驱动不支持重叠I/O）
+  - 主线程捕获Ctrl+C后os._exit()强制退出，OS自动回收句柄
 """
 import ctypes
 from ctypes import wintypes
 import struct
 import sys
 import time
+import threading
+import os
 
 # ===== DDR共享内存配置（和arm_mouse_sender.c V2一致）=====
 DDR_BASE = 0x20000000
@@ -59,11 +65,12 @@ REL_WHEEL  = 0x08
 kernel32 = ctypes.windll.kernel32
 
 GENERIC_READ  = 0x80000000
+GENERIC_WRITE = 0x40000000
 OPEN_EXISTING = 3
 FILE_ATTRIBUTE_NORMAL = 0x80
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-# 函数原型
+# 函数原型（和小梅哥simple_dma.c一致：同步I/O）
 kernel32.CreateFileA.restype = wintypes.HANDLE
 kernel32.CreateFileA.argtypes = [ctypes.c_char_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
 kernel32.ReadFile.restype = wintypes.BOOL
@@ -90,17 +97,22 @@ def find_xdma_device_path():
 
 
 def open_xdma_c2h(base_path):
-    """打开XDMA C2H设备（Card to Host，PC读取DDR）"""
+    """打开XDMA C2H设备（和小梅哥simple_dma.c一致：同步I/O + 读写权限）"""
     full_path = f"{base_path}\\c2h_0"
-    handle = kernel32.CreateFileA(full_path.encode('ascii'), GENERIC_READ, 0, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
+    # 关键：用GENERIC_READ|GENERIC_WRITE + FILE_ATTRIBUTE_NORMAL（同步）
+    handle = kernel32.CreateFileA(full_path.encode('ascii'), GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
     return handle if handle != INVALID_HANDLE_VALUE else None
 
 
 def read_slot(handle, slot_offset):
-    """从DDR读取指定槽位数据（读64字节满足XDMA对齐，解析前32字节）"""
+    """从DDR同步读取指定槽位数据（读64字节满足XDMA对齐，解析前32字节）
+
+    XDMA驱动用SetFilePointerEx的偏移作为DMA源地址（见dma_engine.c的deviceOffset）
+    """
     buf = (ctypes.c_ubyte * 64)()
     bytes_read = wintypes.DWORD(0)
-    kernel32.SetFilePointerEx(handle, DDR_BASE + slot_offset, None, 0)
+    # SetFilePointerEx设置DMA源地址偏移（0x20000000 + slot_offset）
+    kernel32.SetFilePointerEx(handle, ctypes.c_longlong(DDR_BASE + slot_offset), None, 0)
     if not kernel32.ReadFile(handle, buf, 64, ctypes.byref(bytes_read), None):
         return None
     if bytes_read.value < SLOT_SIZE:
@@ -208,46 +220,61 @@ def main():
     print("序号    | 接口 | 数据内容                    | 延时(us) | 开发板时间戳")
     print("-" * 80)
 
+    # 用独立线程做ReadFile循环（XDMA驱动只支持同步I/O，无法用重叠I/O中断）
+    # 主线程捕获Ctrl+C后os._exit()强制退出，OS自动回收XDMA句柄
+    stop_flag = threading.Event()
+
+    def worker():
+        nonlocal count, clock_offset, last_seq
+        try:
+            while not stop_flag.is_set():
+                # 同步轮询USB槽位
+                data = read_slot(h_c2h, SLOT_USB)
+                if data is None:
+                    continue
+
+                parsed = parse_slot(data)
+                if parsed is None:
+                    continue
+
+                seq, dev_id, dlen, data_payload, tv_sec, tv_nsec = parsed
+
+                # 检测序号变化
+                if seq != last_seq:
+                    last_seq = seq
+                    if seq > 0:
+                        count += 1
+                        dev_str = DEV_NAMES.get(dev_id, f"?{dev_id}")
+                        payload_str = format_payload(dev_id, data_payload, dlen)
+
+                        pc_time = time.time()
+                        arm_time = tv_sec + tv_nsec / 1e9
+                        if clock_offset is None:
+                            clock_offset = pc_time - arm_time
+                        latency_us = (pc_time - arm_time - clock_offset) * 1e6
+
+                        ts_str = f"{tv_sec}.{tv_nsec // 1000000:03d}"
+                        print(f"#{seq:<6d}| {dev_str:<4s} | {payload_str:<27s} | {latency_us:8.0f} | {ts_str}")
+        except Exception as e:
+            print(f"\n[worker异常] {e}")
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
     try:
-        while True:
-            # 轮询USB槽位
-            data = read_slot(h_c2h, SLOT_USB)
-            if data is None:
-                continue
-
-            parsed = parse_slot(data)
-            if parsed is None:
-                continue
-
-            seq, dev_id, dlen, data_payload, tv_sec, tv_nsec = parsed
-
-            # 检测序号变化
-            if seq != last_seq:
-                last_seq = seq
-                if seq > 0:
-                    count += 1
-                    dev_str = DEV_NAMES.get(dev_id, f"?{dev_id}")
-                    payload_str = format_payload(dev_id, data_payload, dlen)
-
-                    # PC收到时间（Unix时间戳，秒）
-                    pc_time = time.time()
-                    # 开发板事件时间戳（秒）
-                    arm_time = tv_sec + tv_nsec / 1e9
-
-                    # 首次校准时钟偏差（假设首次延时为0，后续测量相对延时）
-                    if clock_offset is None:
-                        clock_offset = pc_time - arm_time
-
-                    # 相对延时 = (PC收到时间 - 开发板发送时间) - 时钟偏差
-                    latency_us = (pc_time - arm_time - clock_offset) * 1e6
-
-                    ts_str = f"{tv_sec}.{tv_nsec // 1000000:03d}"
-                    print(f"#{seq:<6d}| {dev_str:<4s} | {payload_str:<27s} | {latency_us:8.0f} | {ts_str}")
-
+        # 主线程等待Ctrl+C
+        while t.is_alive():
+            t.join(0.5)
     except KeyboardInterrupt:
-        print(f"\n\n退出，共收到 {count} 个事件")
-
-    kernel32.CloseHandle(h_c2h)
+        print(f"\n\n[Ctrl+C] 正在退出，共收到 {count} 个事件")
+        stop_flag.set()
+        # 给线程一点时间退出，然后强制退出（OS自动回收XDMA句柄）
+        t.join(1.0)
+        try:
+            kernel32.CloseHandle(h_c2h)
+        except Exception:
+            pass
+        os._exit(0)
     return 0
 
 
