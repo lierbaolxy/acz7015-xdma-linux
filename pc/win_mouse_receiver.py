@@ -8,7 +8,7 @@ PC Windows侧：USB鼠标数据接收程序（协议标准格式V2）
   - USB数据从data字段解析input_event（type+code+value）
   - 兼容后续CAN/PS2/RS422接口扩展
 
-协议依据：d:\workspace\trae\day01\0702\protocol_spec.md
+协议依据：d:/workspace/trae/day01/0702/protocol_spec.md
   - 统一槽位：{seq,device_id,data_len,reserved,data[8],tv_sec,tv_nsec} 32字节
   - USB槽位地址：0x20000000
 
@@ -80,20 +80,84 @@ kernel32.SetFilePointerEx.argtypes = [wintypes.HANDLE, ctypes.c_longlong, ctypes
 kernel32.CloseHandle.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
+# SetupAPI（枚举 XDMA 设备接口路径，替代 xdma_info.exe 硬编码）
+setupapi = ctypes.windll.setupapi
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8)]
+
+
+XDMA_GUID = GUID(0x74c7e4a9, 0x6d5d, 0x4a70,
+                 (ctypes.c_ubyte * 8)(0xbc, 0x0d, 0x20, 0x69, 0x1d, 0xff, 0x9e, 0x9d))
+
+
+class SP_DEVICE_INTERFACE_DATA(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("InterfaceClassGuid", GUID),
+                ("Flags", wintypes.DWORD),
+                ("Reserved", ctypes.c_void_p)]
+
+
+class SP_DEVICE_INTERFACE_DETAIL_DATA_A(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("DevicePath", ctypes.c_char * 1)]
+
+
+DIGCF_PRESENT = 0x02
+DIGCF_DEVICEINTERFACE = 0x10
+
+setupapi.SetupDiGetClassDevsA.restype = ctypes.c_void_p
+setupapi.SetupDiGetClassDevsA.argtypes = [ctypes.POINTER(GUID), ctypes.c_char_p,
+                                          ctypes.c_void_p, wintypes.DWORD]
+setupapi.SetupDiEnumDeviceInterfaces.restype = wintypes.BOOL
+setupapi.SetupDiEnumDeviceInterfaces.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                 ctypes.POINTER(GUID), wintypes.DWORD,
+                                                 ctypes.POINTER(SP_DEVICE_INTERFACE_DATA)]
+setupapi.SetupDiGetDeviceInterfaceDetailA.restype = wintypes.BOOL
+setupapi.SetupDiGetDeviceInterfaceDetailA.argtypes = [ctypes.c_void_p,
+                                                       ctypes.POINTER(SP_DEVICE_INTERFACE_DATA),
+                                                       ctypes.c_void_p, wintypes.DWORD,
+                                                       ctypes.POINTER(wintypes.DWORD),
+                                                       ctypes.c_void_p]
+setupapi.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
+setupapi.SetupDiDestroyDeviceInfoList.argtypes = [ctypes.c_void_p]
+
 
 def find_xdma_device_path():
-    """从xdma_info.exe输出解析设备路径"""
-    import subprocess
-    xdma_info = r"G:\fpga\0708\111\盘C_基于Verilog的FPGA逻辑设计与验证视频课程\04_高速收发器原理与应用教程\06_基于XDMA的PCIE应用系统\工程\XDMA\xdma_driver_win_bin_x64_2017_4\x64\bin\xdma_info.exe"
-    try:
-        result = subprocess.run([xdma_info], capture_output=True, text=True, timeout=5)
-        for line in result.stdout.split('\n'):
-            if 'device path' in line.lower():
-                path = line.split(':', 1)[1].strip()
-                return path
-    except Exception as e:
-        print(f"运行xdma_info.exe失败: {e}")
-    return None
+    """SetupAPI 枚举 XDMA 设备接口路径（同 xdma_demo.c / win_rs422_receiver.py）"""
+    h = setupapi.SetupDiGetClassDevsA(ctypes.byref(XDMA_GUID), None, None,
+                                      DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
+    if not h or h == INVALID_HANDLE_VALUE:
+        return None
+
+    did = SP_DEVICE_INTERFACE_DATA()
+    did.cbSize = ctypes.sizeof(SP_DEVICE_INTERFACE_DATA)
+    if not setupapi.SetupDiEnumDeviceInterfaces(h, None, ctypes.byref(XDMA_GUID),
+                                                0, ctypes.byref(did)):
+        setupapi.SetupDiDestroyDeviceInfoList(h)
+        return None
+
+    ptr_size = ctypes.sizeof(ctypes.c_void_p)
+    detail_cb_size = (5 + ptr_size - 1) & ~(ptr_size - 1)
+    detail_buf = (ctypes.c_ubyte * 512)()
+    detail = ctypes.cast(detail_buf, ctypes.POINTER(SP_DEVICE_INTERFACE_DETAIL_DATA_A))
+    detail[0].cbSize = detail_cb_size
+
+    if not setupapi.SetupDiGetDeviceInterfaceDetailA(h, ctypes.byref(did), detail,
+                                                     512, None, None):
+        setupapi.SetupDiDestroyDeviceInfoList(h)
+        return None
+
+    # DevicePath 紧跟 cbSize(DWORD=4字节) 之后
+    path_offset = ctypes.sizeof(wintypes.DWORD)
+    raw_bytes = bytes(detail_buf[path_offset:path_offset + 255])
+    path = raw_bytes.split(b'\x00')[0].decode('ascii', errors='replace')
+    setupapi.SetupDiDestroyDeviceInfoList(h)
+    return path
 
 
 def open_xdma_c2h(base_path):
