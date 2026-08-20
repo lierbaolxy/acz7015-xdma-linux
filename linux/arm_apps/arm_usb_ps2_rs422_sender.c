@@ -95,6 +95,8 @@
 #define RS422_CMD_TEMP         0xD3   /* 温度，1字节数据 */
 #define RS422_CMD_VOLTAGE      0xD4   /* 电压，2字节数据 */
 #define RS422_CMD_VERSION      0xD5   /* 版本，3字节数据 */
+#define RS422_CMD_PBIT         0xD6   /* 上电PBIT，6字节数据（上电连续5帧） */
+#define RS422_CMD_DEVNAME      0xD7   /* 设备型号，16字节CHAR（上电连续3帧） */
 
 /* 统一DDR转发槽位格式（32字节，对齐cache line） */
 typedef struct {
@@ -223,6 +225,8 @@ static int get_data_len(uint8_t cmd)
         case RS422_CMD_TEMP:         return 1;
         case RS422_CMD_VOLTAGE:      return 2;
         case RS422_CMD_VERSION:      return 3;
+        case RS422_CMD_PBIT:         return 6;
+        case RS422_CMD_DEVNAME:      return 16;
         default:                     return -1;
     }
 }
@@ -235,6 +239,8 @@ static const char *rs422_cmd_name(uint8_t cmd)
         case RS422_CMD_TEMP:         return "温度";
         case RS422_CMD_VOLTAGE:      return "电压";
         case RS422_CMD_VERSION:      return "版本";
+        case RS422_CMD_PBIT:         return "上电PBIT";
+        case RS422_CMD_DEVNAME:      return "设备型号";
         default:                     return "未知";
     }
 }
@@ -270,12 +276,28 @@ static void print_rs422_version(const uint8_t *bf)
     printf("  版本: %d.%02d.%02d", bf[0], bf[1], bf[2]);
 }
 
+static void print_rs422_pbit(const uint8_t *bf)
+{
+    int i;
+    printf("  PBIT:");
+    for (i = 0; i < 6; i++)
+        printf(" %02X", bf[i]);
+}
+
+static void print_rs422_devname(const uint8_t *bf)
+{
+    char name[17];
+    memcpy(name, bf, 16);
+    name[16] = '\0';
+    printf("  型号: %s", name);
+}
+
 typedef struct {
     int state;          /* 0=等帧头, 1=等标识, 2=读数据, 3=等校验和 */
     uint8_t cmd;
     int data_len;
     int data_idx;
-    uint8_t buf[8];
+    uint8_t buf[16];    /* 最大16字节（设备型号报文） */
     uint8_t checksum;
 } rs422_parser_t;
 
@@ -357,6 +379,41 @@ static void slot_publish(volatile uint8_t *ddr, uint32_t legacy_off,
     dma_wb_slot(legacy);
 
     *pseq = seq;
+}
+
+/* 设备型号(16字节超data[8]上限)分2片发布：
+ *   reserved = (片序号 << 16) | 总长度(16)，PC端据此合并两片
+ *   片0: data[8]=型号[0..7],   片1: data[8]=型号[8..15]
+ * 均为裸字节存储（不含0x55帧头/标识/校验和，只存16字节CHAR原文） */
+static void slot_publish_devname(volatile uint8_t *ddr, uint32_t legacy_off,
+                                 uint32_t ring_off, const uint8_t *name16,
+                                 uint32_t sec, uint32_t nsec, uint32_t *pseq)
+{
+    uint32_t seq0 = *pseq + 1;
+    uint32_t seq1 = seq0 + 1;
+    volatile share_slot_t *r0 =
+        (volatile share_slot_t *)(ddr + ring_off +
+                                  (seq0 % RING_SLOTS) * sizeof(share_slot_t));
+    volatile share_slot_t *r1 =
+        (volatile share_slot_t *)(ddr + ring_off +
+                                  (seq1 % RING_SLOTS) * sizeof(share_slot_t));
+    volatile share_slot_t *legacy =
+        (volatile share_slot_t *)(ddr + legacy_off);
+
+    slot_fill(r0, DEV_RS422, name16, 8, sec, nsec, seq0);
+    r0->reserved = (0u << 16) | 16u;   /* 片0，总长16 */
+    dma_wb_slot(r0);
+
+    slot_fill(r1, DEV_RS422, name16 + 8, 8, sec, nsec, seq1);
+    r1->reserved = (1u << 16) | 16u;   /* 片1，总长16 */
+    dma_wb_slot(r1);
+
+    /* 单槽区只能放8字节，仅存高16位片计数（legacy区不承载完整型号） */
+    slot_fill(legacy, DEV_RS422, name16, 8, sec, nsec, seq0);
+    legacy->reserved = (0u << 16) | 16u;
+    dma_wb_slot(legacy);
+
+    *pseq = seq1;
 }
 
 int main(int argc, char *argv[])
@@ -537,20 +594,30 @@ int main(int argc, char *argv[])
 
             if (parser_feed(&parser, b)) {
                 struct timespec ts;
-                uint8_t payload[8];
                 int k;
 
                 /* 用REALTIME与USB路ev.time同基准，PC端统一校准延时 */
                 clock_gettime(CLOCK_REALTIME, &ts);
-                payload[0] = parser.cmd;
-                for (k = 0; k < parser.data_len; k++)
-                    payload[1 + k] = parser.buf[k];
 
-                slot_publish(ddr_base, SLOT_RS422, RING_RS422, DEV_RS422,
-                             payload, (uint32_t)(1 + parser.data_len),
-                             (uint32_t)ts.tv_sec,
-                             (uint32_t)ts.tv_nsec,
-                             &rs422_seq);
+                if (parser.cmd == RS422_CMD_DEVNAME) {
+                    /* 设备型号16字节：分2片裸字节存储，reserved编码片序+总长 */
+                    slot_publish_devname(ddr_base, SLOT_RS422, RING_RS422,
+                                         parser.buf,
+                                         (uint32_t)ts.tv_sec,
+                                         (uint32_t)ts.tv_nsec,
+                                         &rs422_seq);
+                } else {
+                    uint8_t payload[8];
+                    payload[0] = parser.cmd;
+                    for (k = 0; k < parser.data_len && k < 7; k++)
+                        payload[1 + k] = parser.buf[k];
+
+                    slot_publish(ddr_base, SLOT_RS422, RING_RS422, DEV_RS422,
+                                 payload, (uint32_t)(1 + parser.data_len),
+                                 (uint32_t)ts.tv_sec,
+                                 (uint32_t)ts.tv_nsec,
+                                 &rs422_seq);
+                }
 
                 printf("[RS422 #%u] %s", rs422_seq, rs422_cmd_name(parser.cmd));
                 switch (parser.cmd) {
@@ -559,6 +626,8 @@ int main(int argc, char *argv[])
                     case RS422_CMD_TEMP:         print_rs422_temp(parser.buf); break;
                     case RS422_CMD_VOLTAGE:      print_rs422_voltage(parser.buf); break;
                     case RS422_CMD_VERSION:      print_rs422_version(parser.buf); break;
+                    case RS422_CMD_PBIT:         print_rs422_pbit(parser.buf); break;
+                    case RS422_CMD_DEVNAME:      print_rs422_devname(parser.buf); break;
                 }
                 printf("\n");
             }

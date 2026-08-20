@@ -1,178 +1,161 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ACZ7015 CAN数据接收程序（PC端）
-功能：通过XDMA从DDR共享内存读取CAN数据（device_id=1，槽位0x20000020）
-协议依据：d:/workspace/trae/day01/0702/protocol_spec.md
-依赖：pywin32（ctypes调用Win32 API）
-用法：python -u win_can_receiver.py
-"""
+ACZ7015 CAN 数据接收程序（PC 端）
 
+功能：通过 XDMA 从 DDR 共享内存读取 CAN 槽位（device_id=1，槽位 0x20000020），
+      解析 A825/ARINC825 29 位扩展帧并显示。
+协议依据：fpga_project/docs/can_protocol_spec.md
+  - 500kbps，29 位扩展帧（ID 0x01180115 ~ 0x01180119）
+  - 接收 4 种帧，发送 1 种帧
+
+CAN 槽位编码（与 arm_can_sender.c 的 write_can_to_ddr 严格对应）：
+  data[0..3] = CAN ID（uint32 小端，29 位）
+  data[4..7] = CAN 数据 data[0..3]
+  reserved[0..1] = CAN 数据 data[4..5]（仅 data_len > 4 时）
+  data_len    = CAN DLC
+
+复用 win_mouse_receiver 的成熟 XDMA 层（SetupAPI 枚举 + 同步 I/O）。
+
+用法：python -u win_can_receiver.py
+""" 
 import ctypes
 import struct
 import time
 import sys
 import os
 
-# ========== 协议规范定义 ==========
-DDR_BASE = 0x20000000
-SLOT_SIZE = 32
-SLOT_CAN = 0x20          # CAN槽位偏移
-DEV_CAN = 1              # CAN的device_id
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import win_mouse_receiver as wm   # 复用 XDMA 层
 
-# ========== XDMA设备GUID ==========
-XDMA_GUID = "{74c7e4a9-6d5d-4a70-bc0d-20691dff9e9d}"
-GENERIC_READ = 0x80000000
-GENERIC_WRITE = 0x40000000
-OPEN_EXISTING = 0x3
-FILE_ATTRIBUTE_NORMAL = 0x80
-INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+# ===== CAN 槽位配置 =====
+SLOT_CAN = 0x20          # 0x20000020
+DEV_CAN  = 1
 
-# ========== Win32 API ==========
-kernel32 = ctypes.windll.kernel32
-CreateFileA = kernel32.CreateFileA
-ReadFile = kernel32.ReadFile
-WriteFile = kernel32.WriteFile
-CloseHandle = kernel32.CloseHandle
-SetFilePointerEx = kernel32.SetFilePointerEx
-DeviceIoControl = kernel32.DeviceIoControl
+# ===== 协议帧 ID（29 位扩展帧）=====
+CAN_ID_TRACKBALL = 0x01180118  # 轨迹球数据（4B）
+CAN_ID_VER_QUERY = 0x01180119  # 版本查询（发送，通常本侧不主动收）
+CAN_ID_VER_REPLY = 0x01180117  # 版本回复（3B）
+CAN_ID_PBIT      = 0x01180116  # 上电 PBIT（6B ×5）
+CAN_ID_MODEL     = 0x01180115  # 设备型号（6B ×3）
 
-# ========== 槽位解析 ==========
-def parse_slot(data):
-    """解析32字节槽位，返回(seq, device_id, data_len, reserved, data_payload, tv_sec, tv_nsec)"""
-    if len(data) < SLOT_SIZE:
+CAN_ID_NAMES = {
+    CAN_ID_TRACKBALL: "轨迹球数据",
+    CAN_ID_VER_QUERY: "版本查询",
+    CAN_ID_VER_REPLY: "版本回复",
+    CAN_ID_PBIT:      "上电PBIT",
+    CAN_ID_MODEL:     "设备型号",
+}
+
+
+def parse_can_slot(data):
+    """解析 32 字节 CAN 槽位，返回 (seq, can_id, dlc, can_data_bytes)。"""
+    if data is None or len(data) < 32:
         return None
-    seq, device_id, data_len, reserved = struct.unpack_from('<IIII', data, 0)
-    data_payload = data[0x10:0x18]  # 8字节data
-    tv_sec, tv_nsec = struct.unpack_from('<II', data, 0x18)
-    return seq, device_id, data_len, reserved, data_payload, tv_sec, tv_nsec
+    seq, dev_id, dlc, reserved = struct.unpack_from('<IIII', data, 0)
+    if dev_id != DEV_CAN:
+        return None
+    payload = data[0x10:0x18]   # 8 字节 data
 
-def format_can_payload(data, data_len):
-    """格式化CAN数据内容"""
-    if data_len < 3:
-        return f"无效(data_len={data_len})"
+    # 29 位扩展帧 ID（4 字节小端）
+    can_id = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
+    can_id &= 0x1FFFFFFF
 
-    can_id = data[0] | (data[1] << 8)
-    dlc = data[2]
-    can_data = data[3:3+min(dlc, 5)]
+    # CAN 数据：data[4..7] + reserved 低 2 字节（DLC>4 时补齐）
+    can_data = list(payload[4:8])
+    if dlc > 4:
+        can_data += [reserved & 0xFF, (reserved >> 8) & 0xFF]
+    can_data = can_data[:dlc if dlc > 0 else 0]
 
+    return seq, can_id, dlc, can_data
+
+
+def format_trackball_data(b):
+    """解析轨迹球数据帧（0x01180118，4 字节位域）。"""
+    if len(b) < 4:
+        return "数据不足"
+    raw = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+    right = (raw >> 0) & 0x1
+    left  = (raw >> 1) & 0x1
+    y = (raw >> 2) & 0xFF
+    x = (raw >> 10) & 0xFF
+    wheel = (raw >> 18) & 0xFF
+    # 有符号 8 位位移
+    if x & 0x80: x -= 256
+    if y & 0x80: y -= 256
+    if wheel & 0x80: wheel -= 256
+    return f"X={x:>3} Y={y:>3} Wheel={wheel:>3} 左键={left} 右键={right}"
+
+
+def format_can_payload(can_id, dlc, can_data):
+    """格式化 CAN 帧内容。"""
+    name = CAN_ID_NAMES.get(can_id, "未知")
     hex_data = ' '.join(f'{b:02X}' for b in can_data)
-    return f"CAN ID=0x{can_id:04X} DLC={dlc} Data=[{hex_data}]"
+    if can_id == CAN_ID_TRACKBALL and len(can_data) >= 4:
+        tb = format_trackball_data(can_data)
+        return f"{name} [{tb}]"
+    elif can_id == CAN_ID_MODEL:
+        try:
+            s = bytes(can_data).decode('ascii', errors='replace')
+            return f"{name} 型号={s}"
+        except Exception:
+            pass
+    return f"{name} DLC={dlc} Data=[{hex_data}]"
 
-# ========== XDMA设备查找 ==========
-def find_xdma_device():
-    """查找XDMA设备路径"""
-    import win32com.client
-    try:
-        wmi = win32com.client.GetObject("winmgmts:")
-        devices = wmi.InstancesOf("Win32_PnPEntity")
-        for dev in devices:
-            if dev.DeviceID and "VEN_10EE" in str(dev.DeviceID).upper():
-                guid_path = str(dev.DeviceID)
-                if "{" in guid_path:
-                    return f"\\\\?\\{guid_path.lower()}"
-    except:
-        pass
 
-    # 备用：硬编码路径
-    base = r"\\?\pci#ven_10ee&dev_7021&subsys_000710ee&rev_00#4&3d70c87&0&00e0"
-    return f"{base}#{XDMA_GUID}"
-
-# ========== DDR读取 ==========
-def read_can_slot(handle):
-    """从DDR读取CAN槽位（读64字节对齐，取前32字节）"""
-    buf = (ctypes.c_ubyte * 64)()
-    bytes_read = ctypes.c_ulong(0)
-
-    # 设置偏移到CAN槽位
-    offset = DDR_BASE + SLOT_CAN
-    pos = ctypes.c_longlong(offset)
-    if not SetFilePointerEx(handle, pos, None, 0):  # FILE_BEGIN
-        return None
-
-    # 读64字节
-    if not ReadFile(handle, buf, 64, ctypes.byref(bytes_read), None):
-        return None
-    if bytes_read.value < SLOT_SIZE:
-        return None
-
-    return bytes(buf[:SLOT_SIZE])
-
-# ========== 主函数 ==========
 def main():
-    print("=== PC端CAN数据接收程序 V2（协议标准格式）===")
-    print(f"协议依据：d:/workspace/trae/day01/0702/protocol_spec.md\n")
+    print("=== PC端 CAN 数据接收程序（A825 扩展帧）===")
 
-    # 查找XDMA设备
-    print("查找XDMA设备...")
-    device_path = find_xdma_device()
-    c2h_path = f"{device_path}\\c2h_0"
-    print(f"C2H设备路径: {c2h_path}")
-
-    # 打开C2H设备
-    handle = CreateFileA(
-        c2h_path.encode('ascii'),
-        GENERIC_READ,
-        0, None,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL, None
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        print("C2H设备打开失败")
+    # 复用成熟 XDMA 层
+    print("查找 XDMA 设备...")
+    base = wm.find_xdma_device_path()
+    if not base:
+        print("未找到 XDMA 设备")
         return 1
-    print("C2H设备打开成功\n")
+    print(f"设备路径: {base}")
 
-    # 读取初始序号
-    data = read_can_slot(handle)
-    if data:
-        slot = parse_slot(data)
-        if slot:
-            print(f"CAN槽位初始序号: {slot[0]}")
+    handle = wm.open_xdma_c2h(base)
+    if not handle:
+        print("C2H 设备打开失败")
+        return 1
+    print("C2H 设备打开成功\n")
 
-    print("等待CAN数据... (发CAN帧试试，Ctrl+C退出)\n")
-    print(f"{'序号':<8}| {'接口':<5}| {'数据内容':<45}| {'延时(us)':<10}| 开发板时间戳")
-    print("-" * 100)
-
+    # 初始序号
+    data = wm.read_slot(handle, SLOT_CAN)
+    data32 = bytes(data[:32]) if data else None
     last_seq = 0
-    if data:
-        slot = parse_slot(data)
-        if slot:
-            last_seq = slot[0]
+    if data32:
+        r = parse_can_slot(data32)
+        if r:
+            last_seq = r[0]
+            print(f"CAN 槽位初始序号: {last_seq}")
+
+    print("等待 CAN 数据... (发 CAN 帧试试，Ctrl+C 退出)\n")
+    print(f"{'序号':<8}| {'接口':<5}| {'数据内容':<55}")
+    print("-" * 90)
 
     clock_offset = None
     try:
         while True:
-            data = read_can_slot(handle)
+            data = wm.read_slot(handle, SLOT_CAN)
             if not data:
                 continue
-
-            slot = parse_slot(data)
-            if not slot:
+            data32 = bytes(data[:32])
+            r = parse_can_slot(data32)
+            if not r:
                 continue
-
-            seq, device_id, data_len, reserved, data_payload, tv_sec, tv_nsec = slot
+            seq, can_id, dlc, can_data = r
 
             if seq != last_seq:
                 last_seq = seq
-
-                # 计算延时
-                pc_time = time.time()
-                arm_time = tv_sec + tv_nsec / 1e9
-                if clock_offset is None:
-                    clock_offset = pc_time - arm_time
-                latency_us = (pc_time - arm_time - clock_offset) * 1e6
-
-                # 格式化显示
-                dev_name = "CAN" if device_id == DEV_CAN else f"DEV{device_id}"
-                content = format_can_payload(data_payload, data_len)
-                ts_str = f"{tv_sec}.{tv_nsec // 1000000:03d}"
-
-                print(f"#{seq:<7}| {dev_name:<5}| {content:<45}| {latency_us:>8.0f} | {ts_str}")
+                content = format_can_payload(can_id, dlc, can_data)
+                print(f"#{seq:<7}| {'CAN':<5}| {content}")
 
     except KeyboardInterrupt:
         print("\n退出")
     finally:
-        CloseHandle(handle)
+        wm.kernel32.CloseHandle(handle)
+
 
 if __name__ == "__main__":
     sys.exit(main())

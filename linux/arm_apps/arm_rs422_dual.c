@@ -140,6 +140,19 @@ static void uart_send_cmd2(volatile uint32_t *uart, uint8_t c1, uint8_t c2)
     uart_send_bytes(uart, b, 2);
 }
 
+/* 两段式配置命令：先发 3 字节命令，等 5~10ms 后发 1 字节配置值
+ * （采样率配置 F3 / 分辨率配置 E8 的协议时序要求） */
+static void uart_send_cfg3(volatile uint32_t *uart, uint8_t cmd, uint8_t val)
+{
+    uart_send_cmd3(uart, cmd);
+    usleep(7000);                 /* 协议要求 5~10ms 间隔 */
+    wr(uart, FIFO, val);
+    int wait = 0;
+    while (!(rd(uart, SR) & SR_TXEMPTY)) {
+        if (++wait > 1000000) { printf("[警告] TX 等待超时\n"); break; }
+    }
+}
+
 /* 各报文的有效数据长度；未知返回 -1 */
 static int get_data_len(uint8_t cmd)
 {
@@ -274,11 +287,37 @@ int main(int argc, char *argv[])
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    /* 解析模式：stream(默认) / remote；周期默认 4000us */
+    /* 解析参数：stream/remote 模式、查询周期、查询命令、分辨率/采样率配置 */
     int remote = 0;
-    if (argc > 1 && strcmp(argv[1], "remote") == 0)
-        remote = 1;
-    int period_us = (argc > 2) ? atoi(argv[2]) : 4000;
+    int period_us = 4000;
+    int query = -1;    /* -1=无查询, 0=状态 1=温度 2=电压 3=版本 */
+    int cpi   = -1;    /* -1=不配置, 0~10 分辨率设置值 */
+    int rate  = -1;    /* -1=不配置, 10/20/30/40 采样率值 */
+    int i;
+    for (i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "remote") == 0) {
+            remote = 1;
+        } else if (strcmp(a, "stream") == 0) {
+            remote = 0;
+        } else if (strcmp(a, "--query") == 0 && i + 1 < argc) {
+            const char *q = argv[++i];
+            if      (strcmp(q, "status")  == 0) query = 0;
+            else if (strcmp(q, "temp")    == 0) query = 1;
+            else if (strcmp(q, "voltage") == 0) query = 2;
+            else if (strcmp(q, "version") == 0) query = 3;
+        } else if (strcmp(a, "--cpi") == 0 && i + 1 < argc) {
+            cpi = atoi(argv[++i]);
+            if (cpi < 0) cpi = 0;
+            if (cpi > 10) cpi = 10;
+        } else if (strcmp(a, "--rate") == 0 && i + 1 < argc) {
+            rate = atoi(argv[++i]);
+            if (rate < 0) rate = 0;
+            if (rate > 40) rate = 40;
+        } else if (a[0] >= '0' && a[0] <= '9') {
+            period_us = atoi(a);   /* 纯数字参数 = 查询周期(兼容旧位置参数) */
+        }
+    }
     if (period_us < 2000) period_us = 2000;   /* 协议要求 3~5ms，留 2ms 下限保护 */
     if (period_us > 5000) period_us = 5000;
 
@@ -321,6 +360,30 @@ int main(int argc, char *argv[])
         printf("[命令] 下发 EA EA EA 切轨迹球到 Stream 模式\n");
     }
     usleep(10000);   /* 等轨迹球处理模式切换 */
+
+    /* 5. 下发查询命令（可选，测试系统主动查询，轨迹球收到后回对应数据帧） */
+    if (query >= 0) {
+        static const uint8_t qcmd[4] = { CMD_Q_STATUS, CMD_Q_TEMP, CMD_Q_VOLTAGE, CMD_Q_VERSION };
+        static const char *qname[4]  = { "状态", "温度", "电压", "版本" };
+        uart_send_cmd3(uart, qcmd[query]);
+        printf("[命令] 下发%s查询: 0x%02X 0x%02X 0x%02X\n",
+               qname[query], qcmd[query], qcmd[query], qcmd[query]);
+        usleep(10000);
+    }
+    /* 6. 下发分辨率配置（两段式：命令 + 设置值 0~10） */
+    if (cpi >= 0) {
+        uart_send_cfg3(uart, CMD_CFG_CPI, (uint8_t)cpi);
+        printf("[命令] 下发分辨率配置: E8 E8 E8 + 设置值 %d (CPI=%d)\n",
+               cpi, 125 + cpi * 125);
+        usleep(10000);
+    }
+    /* 7. 下发采样率配置（两段式：命令 + 值×10） */
+    if (rate >= 0) {
+        uart_send_cfg3(uart, CMD_CFG_SAMPLERATE, (uint8_t)rate);
+        printf("[命令] 下发采样率配置: F3 F3 F3 + 值 %d (%d fps)\n",
+               rate, rate * 10);
+        usleep(10000);
+    }
 
     printf("UART1 与 DDR 就绪，开始%s... (Ctrl+C 退出)\n\n",
            remote ? "周期查询(0xEB 0xEB)" : "被动接收");
