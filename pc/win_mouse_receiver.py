@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-PC Windows侧：USB鼠标数据接收程序（协议标准格式V2）
+PC Windows侧：USB/PS2/RS422 三路数据接收程序（协议标准格式V4）
+
+改动说明（V3→V4）：
+  - 改读环形缓冲区（每路64槽×32B=2KB，一次DMA整块读）
+  - 按槽内seq升序回放历史帧，根治单槽位覆盖丢帧
+  - USB环形区0x20000100 PS/2环形区0x20000900 RS422环形区0x20001100
+
+改动说明（V2→V3）：
+  - 轮询三路槽位：USB(0x00) + PS2(0x40) + RS422(0x60)，seq各自独立检测
+  - PS/2路解析标准PS/2鼠标3字节数据包（按键+XY位移）
 
 改动说明（V1→V2）：
   - 读取32字节统一槽位格式（原24字节）
   - 解析device_id区分USB/CAN/PS2/RS422四路接口
   - USB数据从data字段解析input_event（type+code+value）
-  - 兼容后续CAN/PS2/RS422接口扩展
 
 协议依据：d:/workspace/trae/day01/0702/protocol_spec.md
   - 统一槽位：{seq,device_id,data_len,reserved,data[8],tv_sec,tv_nsec} 32字节
-  - USB槽位地址：0x20000000
+  - 环形缓冲：板端写ring[seq%64]，PC端整块读2KB后按seq升序回放
+  - PS/2数据：标准PS/2鼠标3字节包
+    Byte0=[Y溢出][X溢出][Y符号][X符号][1][中键][右键][左键] Byte1=X Byte2=Y(上为正)
 
 依赖：Xilinx XDMA Windows驱动已安装
 
@@ -38,6 +48,13 @@ SLOT_USB   = 0x00
 SLOT_CAN   = 0x20
 SLOT_PS2   = 0x40
 SLOT_RS422 = 0x60
+
+# 环形缓冲区（V4）：每路64槽×32B=2KB，板端写ring[seq%64]记录历史帧
+RING_USB   = 0x100
+RING_PS2   = 0x900
+RING_RS422 = 0x1100
+RING_SLOTS = 64
+RING_BYTES = RING_SLOTS * SLOT_SIZE  # 2048字节，64的倍数满足XDMA读要求
 
 # 接口类型标识
 DEV_USB    = 0
@@ -168,30 +185,39 @@ def open_xdma_c2h(base_path):
     return handle if handle != INVALID_HANDLE_VALUE else None
 
 
-def read_slot(handle, slot_offset):
-    """从DDR同步读取指定槽位数据（读64字节满足XDMA对齐，解析前32字节）
+def read_ring(handle, ring_offset):
+    """从DDR同步读取整块环形缓冲区（2048字节=64槽，一次DMA）
 
     XDMA驱动用SetFilePointerEx的偏移作为DMA源地址（见dma_engine.c的deviceOffset）
     """
-    buf = (ctypes.c_ubyte * 64)()
+    buf = (ctypes.c_ubyte * RING_BYTES)()
     bytes_read = wintypes.DWORD(0)
-    # SetFilePointerEx设置DMA源地址偏移（0x20000000 + slot_offset）
-    kernel32.SetFilePointerEx(handle, ctypes.c_longlong(DDR_BASE + slot_offset), None, 0)
-    if not kernel32.ReadFile(handle, buf, 64, ctypes.byref(bytes_read), None):
+    kernel32.SetFilePointerEx(handle, ctypes.c_longlong(DDR_BASE + ring_offset), None, 0)
+    if not kernel32.ReadFile(handle, buf, RING_BYTES, ctypes.byref(bytes_read), None):
         return None
-    if bytes_read.value < SLOT_SIZE:
+    if bytes_read.value < RING_BYTES:
         return None
-    return bytes(buf[:SLOT_SIZE])  # 只返回前32字节供解析
+    return bytes(buf)
 
 
-def parse_slot(data):
-    """解析32字节槽位，返回(seq,device_id,data_len,data,sec,nsec)"""
-    if data is None or len(data) < SLOT_SIZE:
-        return None
-    seq, dev_id, dlen, _res = struct.unpack_from('<IIII', data, 0)
-    data_payload = data[0x10:0x18]  # 8字节
-    tv_sec, tv_nsec = struct.unpack_from('<II', data, 0x18)
-    return seq, dev_id, dlen, data_payload, tv_sec, tv_nsec
+def parse_ring_entries(data, expect_dev):
+    """解析环形缓冲64槽，返回按seq升序的记录列表（跳过空槽/异设备槽）
+
+    撕裂防护：板端seq最后写（前面有内存屏障），PC见新seq则数据字段已就绪
+    """
+    entries = []
+    if data is None:
+        return entries
+    for i in range(RING_SLOTS):
+        off = i * SLOT_SIZE
+        seq, dev_id, dlen, _res = struct.unpack_from('<IIII', data, off)
+        if seq == 0 or dev_id != expect_dev or dlen == 0 or dlen > 8:
+            continue
+        data_payload = data[off + 0x10:off + 0x18]
+        tv_sec, tv_nsec = struct.unpack_from('<II', data, off + 0x18)
+        entries.append((seq, dev_id, dlen, data_payload, tv_sec, tv_nsec))
+    entries.sort(key=lambda e: e[0])
+    return entries
 
 
 def parse_usb_event(data_payload):
@@ -201,6 +227,24 @@ def parse_usb_event(data_payload):
     typ, code = struct.unpack_from('<HH', data_payload, 0)
     value = struct.unpack_from('<i', data_payload, 4)[0]
     return typ, code, value
+
+
+def parse_ps2_packet(data_payload, dlen):
+    """解析标准PS/2鼠标3字节数据包，返回(x,y,左,右,中)
+
+    Byte0: [Y溢出][X溢出][Y符号][X符号][1][中键][右键][左键]
+    Byte1: X位移(9位补码低8位，右为正)
+    Byte2: Y位移(9位补码低8位，PS/2约定上为正)
+    """
+    if dlen < 3 or len(data_payload) < 3:
+        return None
+    b0, b1, b2 = data_payload[0], data_payload[1], data_payload[2]
+    x = b1 - 256 if (b0 & 0x10) else b1   # X符号位bit4
+    y = b2 - 256 if (b0 & 0x20) else b2   # Y符号位bit5
+    left   = b0 & 0x01
+    right  = (b0 >> 1) & 0x01
+    middle = (b0 >> 2) & 0x01
+    return x, y, left, right, middle
 
 
 def ev_type_name(typ):
@@ -239,16 +283,24 @@ def format_payload(dev_id, data_payload, dlen):
         # CAN帧数据（原始字节）
         return f"CAN帧[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_PS2:
-        # PS2扫描码
+        # 标准PS/2鼠标3字节数据包解析
+        parsed = parse_ps2_packet(data_payload, dlen)
+        if parsed:
+            x, y, left, right, middle = parsed
+            return f"X{x:+d} Y{y:+d} [L:{left} R:{right} M:{middle}]"
         return f"PS2[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_RS422:
-        # RS422报文
+        # RS422报文（data[0]=报文标识，后跟有效数据）
+        cmd_names = {0xD1: "位移", 0xD2: "状态", 0xD3: "温度", 0xD4: "电压", 0xD5: "版本"}
+        if dlen >= 1 and data_payload[0] in cmd_names:
+            return f"{cmd_names[data_payload[0]]}: " + \
+                   " ".join(f"{b:02X}" for b in data_payload[1:dlen])
         return f"RS422[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     return f"未知[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
 
 
 def main():
-    print("=== PC端数据接收程序 V2（协议标准格式）===\n")
+    print("=== PC端三路数据接收程序 V4（USB/PS2/RS422 环形缓冲零丢帧）===\n")
 
     # 查找XDMA设备
     print("查找XDMA设备...")
@@ -267,20 +319,28 @@ def main():
         return 1
     print("C2H设备打开成功\n")
 
-    # 读USB槽位初始序号
-    last_seq = 0
-    data = read_slot(h_c2h, SLOT_USB)
-    if data:
-        parsed = parse_slot(data)
-        if parsed:
-            last_seq = parsed[0]
-            print(f"USB槽位初始序号: {last_seq}")
+    # 三路环形缓冲轮询配置：(环形区偏移, 接口名, 期望device_id)
+    poll_rings = [(RING_USB, "USB", DEV_USB),
+                  (RING_PS2, "PS2", DEV_PS2),
+                  (RING_RS422, "RS422", DEV_RS422)]
+
+    # 读各路环形缓冲，取最大seq作为基线（板端程序可能已运行）
+    last_seqs = {}
+    for ring_off, ring_name, expect_dev in poll_rings:
+        data = read_ring(h_c2h, ring_off)
+        max_seq = 0
+        if data:
+            for e in parse_ring_entries(data, expect_dev):
+                max_seq = max(max_seq, e[0])
+        last_seqs[ring_off] = max_seq
+        print(f"{ring_name}环形缓冲基线seq: {max_seq}")
 
     count = 0
+    lost_total = 0
     # 时钟偏差校准值（首次收到事件时自动设置基准）
     clock_offset = None
 
-    print("等待事件... (动鼠标试试，Ctrl+C退出)\n")
+    print("等待事件... (动两只鼠标试试，Ctrl+C退出)\n")
     print("序号    | 接口 | 数据内容                    | 延时(us) | 开发板时间戳")
     print("-" * 80)
 
@@ -289,24 +349,31 @@ def main():
     stop_flag = threading.Event()
 
     def worker():
-        nonlocal count, clock_offset, last_seq
+        nonlocal count, clock_offset, lost_total
         try:
             while not stop_flag.is_set():
-                # 同步轮询USB槽位
-                data = read_slot(h_c2h, SLOT_USB)
-                if data is None:
-                    continue
+                # 依次同步轮询三路环形缓冲
+                for ring_off, ring_name, expect_dev in poll_rings:
+                    data = read_ring(h_c2h, ring_off)
+                    if data is None:
+                        continue
 
-                parsed = parse_slot(data)
-                if parsed is None:
-                    continue
+                    entries = parse_ring_entries(data, expect_dev)
+                    last = last_seqs[ring_off]
+                    new = [e for e in entries if e[0] > last]
+                    if not new:
+                        continue
 
-                seq, dev_id, dlen, data_payload, tv_sec, tv_nsec = parsed
+                    # 丢帧检测：期望帧数(最大seq-基线)与实际收到数之差
+                    max_seq = new[-1][0]
+                    lost = (max_seq - last) - len(new)
+                    if last > 0 and lost > 0:
+                        lost_total += lost
+                        print(f"         [{ring_name} 提示] seq #{last + 1}~#{max_seq} "
+                              f"中{lost}帧被环形覆盖丢失（超过64槽历史）")
+                    last_seqs[ring_off] = max_seq
 
-                # 检测序号变化
-                if seq != last_seq:
-                    last_seq = seq
-                    if seq > 0:
+                    for seq, dev_id, dlen, data_payload, tv_sec, tv_nsec in new:
                         count += 1
                         dev_str = DEV_NAMES.get(dev_id, f"?{dev_id}")
                         payload_str = format_payload(dev_id, data_payload, dlen)
@@ -330,7 +397,7 @@ def main():
         while t.is_alive():
             t.join(0.5)
     except KeyboardInterrupt:
-        print(f"\n\n[Ctrl+C] 正在退出，共收到 {count} 个事件")
+        print(f"\n\n[Ctrl+C] 正在退出，共收到 {count} 个事件（丢帧 {lost_total}）")
         stop_flag.set()
         # 给线程一点时间退出，然后强制退出（OS自动回收XDMA句柄）
         t.join(1.0)
