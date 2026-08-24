@@ -1,0 +1,38 @@
+# === Vivado 生成物 ===
+*.jou
+*.log
+*.cache/
+*.hw/
+*.runs/
+*.sdk/
+*.ip_user_files/
+.Xil/
+*.wdb
+*.pb
+*.str
+*.wcfg
+*.bit
+*.bin
+webtalk*.jou
+webtalk*.log
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === 调试/临时脚本 ===
+fpga/can_integration/*.py
+*_tmp.py
+*_tmp
+_diag*.py
+*_diag*.py
+_diag_*.py
+_retest*.py
+_verify*.py
+_chk*.py
+_state*.py
+_check_*.py
+
+# === Windows 保留文件名 ===
+NUL

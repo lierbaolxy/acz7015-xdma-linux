@@ -210,12 +210,12 @@ def parse_ring_entries(data, expect_dev):
         return entries
     for i in range(RING_SLOTS):
         off = i * SLOT_SIZE
-        seq, dev_id, dlen, _res = struct.unpack_from('<IIII', data, off)
+        seq, dev_id, dlen, reserved = struct.unpack_from('<IIII', data, off)
         if seq == 0 or dev_id != expect_dev or dlen == 0 or dlen > 8:
             continue
         data_payload = data[off + 0x10:off + 0x18]
         tv_sec, tv_nsec = struct.unpack_from('<II', data, off + 0x18)
-        entries.append((seq, dev_id, dlen, data_payload, tv_sec, tv_nsec))
+        entries.append((seq, dev_id, dlen, reserved, data_payload, tv_sec, tv_nsec))
     entries.sort(key=lambda e: e[0])
     return entries
 
@@ -272,7 +272,7 @@ def format_value(typ, code, val):
     return str(val)
 
 
-def format_payload(dev_id, data_payload, dlen):
+def format_payload(dev_id, data_payload, dlen, reserved=0):
     """根据device_id格式化data字段显示"""
     if dev_id == DEV_USB:
         parsed = parse_usb_event(data_payload)
@@ -290,8 +290,13 @@ def format_payload(dev_id, data_payload, dlen):
             return f"X{x:+d} Y{y:+d} [L:{left} R:{right} M:{middle}]"
         return f"PS2[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_RS422:
-        # RS422报文（data[0]=报文标识，后跟有效数据）
-        cmd_names = {0xD1: "位移", 0xD2: "状态", 0xD3: "温度", 0xD4: "电压", 0xD5: "版本"}
+        # 设备型号D7分片：reserved低位=16标记16字节型号，高位=片序号，data为裸字节
+        if (reserved & 0xFFFF) == 16:
+            frag = (reserved >> 16) & 0xFFFF
+            return f"型号片{frag}: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
+        # 常规报文（data[0]=报文标识，后跟有效数据）
+        cmd_names = {0xD1: "位移", 0xD2: "状态", 0xD3: "温度", 0xD4: "电压",
+                     0xD5: "版本", 0xD6: "上电PBIT"}
         if dlen >= 1 and data_payload[0] in cmd_names:
             return f"{cmd_names[data_payload[0]]}: " + \
                    " ".join(f"{b:02X}" for b in data_payload[1:dlen])
@@ -373,10 +378,10 @@ def main():
                               f"中{lost}帧被环形覆盖丢失（超过64槽历史）")
                     last_seqs[ring_off] = max_seq
 
-                    for seq, dev_id, dlen, data_payload, tv_sec, tv_nsec in new:
+                    for seq, dev_id, dlen, reserved, data_payload, tv_sec, tv_nsec in new:
                         count += 1
                         dev_str = DEV_NAMES.get(dev_id, f"?{dev_id}")
-                        payload_str = format_payload(dev_id, data_payload, dlen)
+                        payload_str = format_payload(dev_id, data_payload, dlen, reserved)
 
                         pc_time = time.time()
                         arm_time = tv_sec + tv_nsec / 1e9

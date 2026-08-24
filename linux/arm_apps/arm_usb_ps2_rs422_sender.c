@@ -26,12 +26,14 @@
  *   环形缓冲 : 每路64槽环形区(2KB)记录历史帧，单槽区同步写最新值（兼容旧PC程序）
  *              USB@0x20000100 PS2@0x20000900 RS422@0x20001100，写ring[seq%64]
  *   PS/2     : 标准扫描码（3字节鼠标数据包）
- *   RS422帧  : 帧头0x55 | 标识0xD1~0xD5 | 有效数据 | 校验和(累加取低8位)
+ *   RS422 RX : 帧头0x55 | 标识0xD1~0xD7 | 有效数据 | 校验和(累加取低8位)
+ *   RS422 TX : 裸字节下行命令（无帧头/校验和）：
+ *              Stream EA EA EA | Remote F0 F0 F0 | 查询E9/E4/E3/E2 | Remote位移EB EB | 配置E8/F3
  *
  * 编译：gcc -O2 -o arm_usb_ps2_rs422_sender arm_usb_ps2_rs422_sender.c
  * 运行：sudo systemctl stop serial-getty@ttyPS0.service   # RS422 占用 UART1，需先停 console
- *       sudo ./arm_usb_ps2_rs422_sender [usb节点] [ps2节点]
- *       默认 usb=/dev/input/event1  ps2=/dev/input/event4
+ *       sudo ./arm_usb_ps2_rs422_sender [stream|remote] [周期us] [--query xxx] [--cpi n] [--rate n] [usb节点] [ps2节点]
+ *       默认 usb=/dev/input/event1  ps2=/dev/input/event4；默认 stream 模式被动接收
  *       任一鼠标未插入不报错退出，对应路自动禁用，其余路照常工作
  */
 #include <stdio.h>
@@ -98,6 +100,17 @@
 #define RS422_CMD_PBIT         0xD6   /* 上电PBIT，6字节数据（上电连续5帧） */
 #define RS422_CMD_DEVNAME      0xD7   /* 设备型号，16字节CHAR（上电连续3帧） */
 
+/* RS422 下行命令（采集卡 -> 轨迹球，裸字节，无帧头/校验和） */
+#define CMD_Q_STATUS          0xE9   /* 状态查询 E9 E9 E9 */
+#define CMD_Q_TEMP            0xE4   /* 温度查询 E4 E4 E4 */
+#define CMD_Q_VOLTAGE         0xE3   /* 电压查询 E3 E3 E3 */
+#define CMD_Q_VERSION         0xE2   /* 版本查询 E2 E2 E2 */
+#define CMD_MODE_STREAM       0xEA   /* 切 Stream EA EA EA（默认） */
+#define CMD_MODE_REMOTE       0xF0   /* 切 Remote F0 F0 F0 */
+#define CMD_CFG_CPI           0xE8   /* 分辨率配置 E8 E8 E8 + 值 */
+#define CMD_CFG_SAMPLERATE    0xF3   /* 采样率配置 F3 F3 F3 + 值 */
+#define CMD_RM_QUERY          0xEB   /* Remote位移查询 EB EB（周期） */
+
 /* 统一DDR转发槽位格式（32字节，对齐cache line） */
 typedef struct {
     volatile uint32_t seq;        /* 0x00: 序号，每次事件+1（PC端检测变化） */
@@ -155,6 +168,31 @@ static inline uint32_t rd(volatile uint32_t *r, uint32_t off)
 static inline void wr(volatile uint32_t *r, uint32_t off, uint32_t v)
 {
     r[off / 4] = v;
+}
+
+/* ===== UART1 TX（下行命令下发：采集卡 -> 轨迹球）===== */
+static void uart_send_bytes(volatile uint32_t *uart, const uint8_t *buf, int len)
+{
+    int i;
+    int wait;
+    for (i = 0; i < len; i++)
+        wr(uart, FIFO, buf[i]);
+    wait = 0;
+    while (!(rd(uart, SR) & SR_TXEMPTY)) {
+        if (++wait > 1000000) { printf("[警告] TX 等待超时\n"); break; }
+    }
+}
+
+static void uart_send_cmd3(volatile uint32_t *uart, uint8_t c)
+{
+    uint8_t b[3] = { c, c, c };
+    uart_send_bytes(uart, b, 3);
+}
+
+static void uart_send_cmd2(volatile uint32_t *uart, uint8_t c1, uint8_t c2)
+{
+    uint8_t b[2] = { c1, c2 };
+    uart_send_bytes(uart, b, 2);
 }
 
 /* ===== PS/2 标准数据包构造 =====
@@ -418,7 +456,7 @@ static void slot_publish_devname(volatile uint8_t *ddr, uint32_t legacy_off,
 
 int main(int argc, char *argv[])
 {
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);   /* 无缓冲：确保 nohup 重定向下日志实时落盘 */
 
     int fd_usb = -1, fd_ps2 = -1, fd_mem;
     volatile uint8_t *ddr_base;
@@ -428,11 +466,49 @@ int main(int argc, char *argv[])
     uint32_t usb_seq = 0, ps2_seq = 0, rs422_seq = 0;
     const char *usb_dev = "/dev/input/event1";
     const char *ps2_dev = "/dev/input/event4";
+    int remote = 0;           /* 0=Stream 1=Remote（RS422 下行模式） */
+    int period_us = 4000;     /* Remote 位移查询周期 3~5ms */
+    int query = -1;           /* 一次性查询命令：0状态 1温度 2电压 3版本 */
+    int cpi = -1;             /* 分辨率配置值 0~10 */
+    int rate = -1;            /* 采样率配置值 10/20/30/40 */
 
-    if (argc > 1) usb_dev = argv[1];
-    if (argc > 2) ps2_dev = argv[2];
+    /* 参数解析：支持 remote/stream 模式 + 原 USB/PS2 节点（向后兼容）
+     * 用法：./arm_multi [stream|remote] [周期us] [--query xxx] [--cpi n] [--rate n] [usb节点] [ps2节点] */
+    {
+        int i;
+        int dev_idx = 0;
+        for (i = 1; i < argc; i++) {
+            const char *a = argv[i];
+            if (strcmp(a, "remote") == 0) { remote = 1; }
+            else if (strcmp(a, "stream") == 0) { remote = 0; }
+            else if (strcmp(a, "--query") == 0 && i + 1 < argc) {
+                const char *q = argv[++i];
+                if      (strcmp(q, "status")  == 0) query = 0;
+                else if (strcmp(q, "temp")    == 0) query = 1;
+                else if (strcmp(q, "voltage") == 0) query = 2;
+                else if (strcmp(q, "version") == 0) query = 3;
+            } else if (strcmp(a, "--cpi") == 0 && i + 1 < argc) {
+                cpi = atoi(argv[++i]);
+                if (cpi < 0) cpi = 0;
+                if (cpi > 10) cpi = 10;
+            } else if (strcmp(a, "--rate") == 0 && i + 1 < argc) {
+                rate = atoi(argv[++i]);
+                if (rate < 0) rate = 0;
+                if (rate > 40) rate = 40;
+            } else if (a[0] >= '0' && a[0] <= '9') {
+                period_us = atoi(a);
+            } else if (strncmp(a, "/dev/input/event", 16) == 0) {
+                if (dev_idx == 0) { usb_dev = a; dev_idx = 1; }
+                else              { ps2_dev = a; }
+            }
+        }
+    }
+    if (period_us < 2000) period_us = 2000;
+    if (period_us > 5000) period_us = 5000;
 
     printf("=== USB + PS/2 + RS422 三路并发数据采集程序（协议标准格式）===\n");
+    printf("RS422模式: %s%s%s\n", remote ? "Remote(周期查询EB EB)" : "Stream(被动接收)",
+           query >= 0 ? " +查询" : "", cpi >= 0 || rate >= 0 ? " +配置" : "");
 
     /* 1. 切 MIO49/48 -> GPIO，释放 UART1 EMIO RX 污染（RS422 接收前提） */
     volatile uint32_t *slcr = map_phys(SLCR_BASE);
@@ -450,7 +526,44 @@ int main(int argc, char *argv[])
     volatile uint32_t *uart = map_phys(UART1_BASE);
     if (!uart) return 1;
     wr(uart, IDR, 0xFFFFFFFF);
+    wr(uart, CR, 0x17);   /* RXRST|TXRST|RX_EN|TX_EN：显式复位并使能UART，不依赖serial-getty遗留状态 */
     wr(uart, MR, 0x20);
+
+    /* 2.5 下发 RS422 下行命令（采集卡 -> 轨迹球，裸字节） */
+    uart_send_cmd3(uart, remote ? CMD_MODE_REMOTE : CMD_MODE_STREAM);
+    printf("[命令] 下发 %02X %02X %02X 切轨迹球到 %s 模式\n",
+           remote ? CMD_MODE_REMOTE : CMD_MODE_STREAM,
+           remote ? CMD_MODE_REMOTE : CMD_MODE_STREAM,
+           remote ? CMD_MODE_REMOTE : CMD_MODE_STREAM,
+           remote ? "Remote" : "Stream");
+    usleep(10000);
+
+    if (query >= 0) {
+        static const uint8_t qcmd[4] = { CMD_Q_STATUS, CMD_Q_TEMP, CMD_Q_VOLTAGE, CMD_Q_VERSION };
+        static const char *qname[4]  = { "状态", "温度", "电压", "版本" };
+        uart_send_cmd3(uart, qcmd[query]);
+        printf("[命令] 下发%s查询: %02X %02X %02X\n",
+               qname[query], qcmd[query], qcmd[query], qcmd[query]);
+        usleep(10000);
+    }
+    if (cpi >= 0) {
+        uart_send_cmd3(uart, CMD_CFG_CPI);
+        usleep(7000);
+        uart_send_bytes(uart, (const uint8_t *)&cpi, 1);
+        printf("[命令] 下发分辨率配置: E8 E8 E8 + %d (CPI=%d)\n", cpi, 125 + cpi * 125);
+        usleep(10000);
+    }
+    if (rate >= 0) {
+        uart_send_cmd3(uart, CMD_CFG_SAMPLERATE);
+        usleep(7000);
+        uart_send_bytes(uart, (const uint8_t *)&rate, 1);
+        printf("[命令] 下发采样率配置: F3 F3 F3 + %d (%d fps)\n", rate, rate * 10);
+        usleep(10000);
+    }
+
+    /* 2.6 Remote 位移查询周期计时基准 */
+    struct timespec last_query;
+    clock_gettime(CLOCK_MONOTONIC, &last_query);
 
     /* 3. mmap DDR 共享内存 */
     fd_mem = open("/dev/mem", O_RDWR | O_SYNC);
@@ -458,10 +571,17 @@ int main(int argc, char *argv[])
     ddr_base = (volatile uint8_t *)mmap(NULL, DDR_SIZE,
              PROT_READ | PROT_WRITE, MAP_SHARED, fd_mem, DDR_BASE);
     if (ddr_base == MAP_FAILED) { perror("mmap DDR"); close(fd_mem); return 1; }
-    /* 清零三个环形缓冲区（DDR残留旧数据会干扰PC端seq判重） */
+    /* 清零三个环形缓冲区（DDR残留旧数据会干扰PC端seq判重）
+     * 注意：memset 只写 D-cache，必须 clean 到 DDR，否则 XDMA 经 AXI 读到旧脏 seq */
     memset((void *)(ddr_base + RING_USB),   0, RING_SLOTS * sizeof(share_slot_t));
     memset((void *)(ddr_base + RING_PS2),   0, RING_SLOTS * sizeof(share_slot_t));
     memset((void *)(ddr_base + RING_RS422), 0, RING_SLOTS * sizeof(share_slot_t));
+    syscall(__ARM_NR_cacheflush, (long)(ddr_base + RING_USB),
+            (long)(ddr_base + RING_USB + RING_SLOTS * sizeof(share_slot_t)), 0);
+    syscall(__ARM_NR_cacheflush, (long)(ddr_base + RING_PS2),
+            (long)(ddr_base + RING_PS2 + RING_SLOTS * sizeof(share_slot_t)), 0);
+    syscall(__ARM_NR_cacheflush, (long)(ddr_base + RING_RS422),
+            (long)(ddr_base + RING_RS422 + RING_SLOTS * sizeof(share_slot_t)), 0);
 
     /* 4. 打开两只鼠标设备（任一失败不退出，对应路禁用） */
     fd_usb = open(usb_dev, O_RDONLY);
@@ -630,6 +750,19 @@ int main(int argc, char *argv[])
                     case RS422_CMD_DEVNAME:      print_rs422_devname(parser.buf); break;
                 }
                 printf("\n");
+            }
+        }
+
+        /* 5.4 Remote 模式：按周期下发位移查询 EB EB（3~5ms） */
+        if (remote) {
+            struct timespec now;
+            long elapsed_us;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            elapsed_us = (now.tv_sec - last_query.tv_sec) * 1000000L +
+                         (now.tv_nsec - last_query.tv_nsec) / 1000;
+            if (elapsed_us >= period_us) {
+                uart_send_cmd2(uart, CMD_RM_QUERY, CMD_RM_QUERY);
+                last_query = now;
             }
         }
     }
