@@ -1,14 +1,17 @@
 # ACZ7015 XDMA + Linux 共存方案
 
-基于 ACZ7015（Zynq7015）开发板，实现 PS 侧 Linux 系统与 PL 侧 XDMA PCIe 共存，支持 USB 鼠标数据通过 PCIe 实时传输到 Windows PC。
+基于 ACZ7015（Zynq7015）开发板，实现 PS 侧 Linux 系统与 PL 侧 XDMA PCIe 共存，支持 **USB 鼠标 / PS2 鼠标 / RS422 / CAN 四路外设**数据同时采集，通过 PCIe 实时传输到 Windows PC。
 
 ## 功能特性
 
 - PS 侧运行 Ubuntu 16.04.4 LTS（内核 4.14.0-xilinx）
 - PL 侧 XDMA PCIe EP 模式，Windows PC 通过 PCIe 访问 FPGA
 - USB Host 模式，支持 USB 鼠标热插拔
-- USB 鼠标数据通过 DDR 共享内存 + XDMA 实时传输到 PC
-- 端到端延时约 0.5-1ms
+- PS2 鼠标经 USB 转接模块接入
+- RS422 经 PS UART1(EMIO) + TTL 转 RS422 模块
+- CAN 经 CH343 USB-CANFD 模块（包模式 MODE2，500kbps 扩展帧）
+- 四路数据通过 DDR 共享内存 + XDMA 实时传输到 PC
+- PCIe 单次 DMA 延时约 0.55ms
 
 ## 硬件平台
 
@@ -16,6 +19,8 @@
 - DDR：1GB（其中 512MB 预留给 XDMA DMA 缓冲区）
 - PCIe：PL 侧 GTP 收发器（XDMA EP 模式）
 - USB：PS 侧 USB3320 PHY + CH334H HUB，3×Type-A Host
+- RS422：PS UART1 通过 EMIO 引出至 PL 侧 E5(TX)/B1(RX)，接 TTL 转 RS422 模块
+- CAN：USB-CANFD-V1（泥人科技，CH343 芯片）插 PS 侧 USB Host 口
 - 网络：RTL8211F 千兆以太网 + RTL8188FU USB WiFi
 
 ## 目录结构
@@ -24,61 +29,70 @@
 acz7015-xdma-linux/
 ├── linux/                    # 开发板 Linux 侧
 │   ├── device_tree/         # 设备树改造脚本
-│   │   └── patch_dtb3.py   #   禁用11个PL节点 + USB Host模式
 │   ├── sd_patch/            # SD卡文件替换脚本
-│   │   └── final_replace.py #   替换system.bit/system.dtb/uEnv.txt
 │   └── arm_apps/            # 开发板 C 程序
-│       ├── arm_mouse_sender.c    # 鼠标数据发送（poll无限等待）
-│       └── arm_mouse_latency.c   # 乒乓法响应程序
+│       ├── arm_all_four.c       # ★ 四路单进程采集程序（USB/PS2/RS422/CAN）
+│       ├── start_four.sh        # ★ 统一启动脚本（释放UART1 + 清旧进程 + 启动采集）
+│       ├── ch343.ko             # CH343 USB转串口驱动（CAN模块用）
+│       ├── deploy_four_senders.py  # 编译+上传+启动一键脚本
+│       └── arm_usb_ps2_rs422_sender.c  # 旧版三路采集（无CAN，保留备份）
 ├── pc/                       # Windows PC 侧
-│   ├── win_mouse_receiver.py     # 鼠标数据接收显示
-│   └── win_xdma_latency_v3.py    # 乒乓法延时测试
+│   ├── win_mouse_receiver.py     # ★ 四路数据接收显示（环形缓冲零丢帧）
+│   ├── win_can_receiver.py      # CAN 单路接收显示
+│   ├── win_rs422_receiver.py    # RS422 单路接收显示
+│   ├── win_xdma_latency_v3.py   # 乒乓法延时测试
+│   └── pc_can_peer.py           # PC端CAN对等测试工具（模拟轨迹球对端）
+├── pc_tools/                # PC端模拟发送工具
+│   ├── rs422_pc_send.py        # RS422协议帧发送（模拟轨迹球上报D1~D5）
+│   └── rs422_pc_send.cpp       # 同上C++版
+├── docs/                    # 协议与对接文档
+│   ├── protocol_spec.md        # 通信协议规范（RS422/CAN/USB/PS2 + DDR布局）
+│   ├── PC端对接指南.md          # PC端XDMA读取与解析指南
+│   ├── USB接口对接文档.md
+│   └── RS422接口对接文档.md
+├── driver/                  # XDMA Windows驱动
 └── README.md
 ```
 
 ## 数据链路
 
 ```
-USB鼠标 → PS侧USB控制器 → Linux内核input子系统 → /dev/input/event1
-    ↓
-开发板C程序读取事件 + 时间戳
-    ↓
-/dev/mem写入DDR共享内存(0x20000000)
-    ↓
-XDMA PCIe C2H DMA
-    ↓
-Windows PC读取DDR → 显示鼠标事件
+USB鼠标   → PS侧USB控制器     → /dev/input/event1  ─┐
+PS2鼠标   → USB转PS2模块     → /dev/input/event3  ─┤
+RS422设备 → TTL转RS422模块   → PS UART1(EMIO)     ─┼─→ 单进程arm_all_four
+CAN设备   → USB-CANFD(CH343) → /dev/ttyCH343USB0 ─┘     ↓ 写DDR共享内存(0x20000000)
+                                                            ↓ 各路独立槽位+64槽环形缓冲区
+Windows PC ← XDMA PCIe C2H DMA ← DDR共享内存 ←────────────┘
 ```
 
 ## DDR 共享内存结构
 
 物理地址：0x20000000（reserved-memory 区域）
 
+### 统一槽位格式（32 字节，对齐 cache line）
+
 ```
 偏移  字段        大小    说明
 0x00  seq         4字节   序号（每次事件+1，PC端检测变化）
 0x04  device_id   4字节   接口类型: 0=USB 1=CAN 2=PS2 3=RS422
 0x08  data_len    4字节   有效数据长度
-0x0C  reserved    4字节   保留对齐
-0x10  data[8]     8字节   原始数据（USB: input_event{type,code,value}共8字节）
+0x0C  reserved    4字节   保留/分片编码（RS422 D7型号用）
+0x10  data[8]     8字节   原始数据
 0x18  tv_sec      4字节   开发板时间戳（秒）
 0x1C  tv_nsec     4字节   开发板时间戳（纳秒）
-合计              32字节  对齐cache line
-
-四路接口槽位布局：
-0x20000000: USB槽位   (32字节)
-0x20000020: CAN槽位   (32字节)
-0x20000040: PS2槽位   (32字节)
-0x20000060: RS422槽位 (32字节)
+合计              32字节
 ```
 
-## PC 端 XDMA 设备节点
+### 四路单槽位 + 环形缓冲区布局
 
-| 设备节点 | 方向 | 用途 |
-|----------|------|------|
-| c2h_0 | PC读DDR | 读鼠标事件数据 |
-| h2c_0 | PC写DDR | 写乒乓法请求 |
-| user | 读写寄存器 | 访问ps2_host_axi模块 |
+| 接口 | 单槽地址 | 环形区地址 | 环形区大小 | device_id |
+|------|----------|-----------|-----------|-----------|
+| USB   | 0x20000000 | 0x20000100 | 2KB(64槽) | 0 |
+| CAN   | 0x20000020 | 0x20001900 | 2KB(64槽) | 1 |
+| PS2   | 0x20000040 | 0x20000900 | 2KB(64槽) | 2 |
+| RS422 | 0x20000060 | 0x20001100 | 2KB(64槽) | 3 |
+
+环形缓冲区：每路 64 槽 × 32B = 2KB，板端写 `ring[seq % 64]`，PC 端一次 DMA 读整块 2KB 后按 seq 升序回放，解决单槽覆盖丢帧。
 
 ## 快速开始
 
@@ -97,22 +111,91 @@ python final_replace.py
 - `system.dtb` → 改造设备树（禁用11个PL节点 + USB Host）
 - `uEnv.txt` → 启动配置（bitstream_size=0x400000，无BOM）
 
-### 3. 开发板运行鼠标发送程序
+### 3. 开发板运行四路采集程序
+
+#### 方式一：手动编译运行（调试用）
 
 ```bash
-gcc -O2 -o arm_mouse_sender arm_mouse_sender.c
-sudo ./arm_mouse_sender
+# 编译（板上 gcc）
+cd /tmp && gcc -O2 -o arm_all_four arm_all_four.c
+
+# 运行（需 root，mmap /dev/mem）
+# 参数：usb节点 ps2节点（event编号以实际为准）
+sudo ./a.out /dev/input/event1 /dev/input/event3 > /tmp/all_four2.log
 ```
 
-### 4. PC 端接收鼠标数据
+> **注意**：上面 `a.out` 是默认输出名，也可以指定 `-o arm_all_four` 编译。
+> event 节点号需先查：`cat /proc/bus/input/devices | grep -B1 -A5 -i mouse`
+
+#### 方式二：一键启动脚本（推荐，自动释放 UART1 + 清旧进程）
 
 ```bash
-python win_mouse_receiver.py
+sudo sh /tmp/start_four.sh /dev/input/event1 /dev/input/event3
 ```
 
-### 5. 延时测试
+##### start_four.sh 脚本内容说明
 
-```bash
+`start_four.sh` 做了以下 3 件事：
+
+1. **释放 UART1 console**（RS422 复用 ttyPS0，先 stop 再 disable 防 systemd 自动重启）：
+   ```sh
+   systemctl stop serial-getty@ttyPS0.service
+   systemctl disable serial-getty@ttyPS0.service
+   ```
+
+2. **清理旧进程**（按命令行匹配，防止多实例并存抢 DDR 环形缓冲区）：
+   ```sh
+   pkill -9 -f arm_all_four
+   pkill -9 -f arm_can_sender
+   pkill -9 -f arm_multi
+   pkill -9 -f arm_usb_ps2_rs422
+   pkill -9 -f arm_rs422
+   pkill -9 -f hexdump
+   ```
+
+3. **后台启动四路单进程**（默认 stream 模式被动接收；依赖 ch343.ko 已加载）：
+   ```sh
+   nohup /tmp/arm_all_four "$USB_DEV" "$PS2_DEV" > /tmp/all_four.log 2>&1 &
+   ```
+
+#### 方式三：PC 端远程一键部署（自动编译+上传+启动）
+
+```powershell
+cd acz7015-xdma-linux\linux\arm_apps
+python deploy_four_senders.py --probe   # 先验证CAN驱动链路
+python deploy_four_senders.py --start   # 上传+编译+启动
+```
+
+### 4. PC 端接收四路数据
+
+```powershell
+cd acz7015-xdma-linux\pc
+python -u win_mouse_receiver.py
+```
+
+程序会自动轮询四路环形缓冲区（USB→CAN→PS2→RS422），按 seq 升序回放，显示延时和丢帧检测。
+
+### 5. RS422 数据模拟（PC 端发送）
+
+```powershell
+cd acz7015-xdma-linux\pc_tools
+python rs422_pc_send.py COM13 10 200
+```
+
+通过 PC 串口（USB 转 RS422）发 5 种协议帧（位移/状态/温度/电压/版本），验证板端 RS422 接收。
+
+### 6. CAN 数据模拟
+
+需第二个 USB-CANFD-V1 模块插 PC，CANH/CANL 互连板端模块：
+
+```powershell
+cd acz7015-xdma-linux\pc
+python pc_can_peer.py --port COM14 --stream
+```
+
+### 7. 延时测试
+
+```powershell
 python win_xdma_latency_v3.py 100
 ```
 
@@ -120,10 +203,18 @@ python win_xdma_latency_v3.py 100
 
 | 指标 | 值 |
 |------|-----|
-| 平均往返延时 | 1.09 ms |
-| 平均单程延时 | 0.55 ms |
-| 最小单程延时 | 0.45 ms |
-| 最大单程延时 | 0.85 ms |
+| PCIe 平均往返延时 | 1.09 ms |
+| PCIe 平均单程延时 | 0.55 ms |
+| PCIe 最小单程延时 | 0.45 ms |
+| PCIe 最大单程延时 | 0.85 ms |
+
+## 协议规范
+
+详见 [docs/protocol_spec.md](docs/protocol_spec.md)，要点：
+
+- **RS422**：115200 8N1，自定义帧（0x55帧头+标识+数据+校验和），7种报文(D1~D7)，Stream/Remote 两种模式
+- **CAN**：500kbps，29位扩展帧，5种帧ID(0x01180115~0x01180119)
+- **USB/PS2**：标准通信格式（USB HID / PS2 扫描码）
 
 ## 设备树改造说明
 
@@ -150,8 +241,11 @@ USB 节点改造：`dr_mode` 从 `otg` 改为 `host`。
 1. uEnv.txt 不能有 BOM 头，否则 u-boot 报 syntax error
 2. bitstream_size 必须 >= 实际 bitstream 大小（0x400000 = 4MB）
 3. 替换 SD 卡文件后需 MD5 校验确保复制成功
-4. 开发板和 PC 时钟不同步，延时测试用乒乓法（往返/2）
+4. 开发板和 PC 时钟不同步，延时测试用乒乓法（往返/2）或首帧校准 offset
 5. HDMI 无显示（XDMA bitstream 无 VDMA/VTC IP）
+6. RS422 占用 UART1(ttyPS0)，运行前必须 `systemctl stop serial-getty@ttyPS0`
+7. CAN 依赖 ch343.ko 驱动，板卡重启后需重新 `insmod`（/tmp 丢失）
+8. Ctrl+C 正常退出采集程序，强杀会导致 XDMA DMA 引擎卡死
 
 ## 许可证
 
