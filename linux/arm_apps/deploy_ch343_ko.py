@@ -13,7 +13,8 @@ HOST = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("BOARD_IP", "172.20.
 USER = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("BOARD_USER", "zynq")
 PWD  = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("BOARD_PWD", "root")
 
-LOCAL_KO = r"d:\workspace\trae\day01\0702\toolchain\ch343.ko"
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOCAL_KO = os.path.join(HERE, "ch343.ko")
 REMOTE_KO = "/tmp/ch343.ko"
 
 

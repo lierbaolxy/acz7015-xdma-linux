@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_CAN = os.path.join(HERE, "arm_can_sender.c")
 SRC_MULTI = os.path.join(HERE, "arm_usb_ps2_rs422_sender.c")
 SRC_START = os.path.join(HERE, "start_four.sh")
-KO_LOCAL = os.path.join(HERE, "..", "..", "..", "toolchain", "ch343.ko")
+KO_LOCAL = os.path.join(HERE, "ch343.ko")
 
 
 def upload(cli, local_path, remote_path):
