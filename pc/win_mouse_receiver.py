@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-PC Windows侧：USB/PS2/RS422 三路数据接收程序（协议标准格式V4）
+PC Windows侧：USB/CAN/PS2/RS422 四路数据接收程序（协议标准格式V5）
+
+改动说明（V4→V5）：
+  - 新增 CAN 路环形缓冲区读取（0x20001900），完整解析 5 种协议帧
+  - CAN帧布局：data[0..3]=29位扩展帧ID(小端), data[4..7]+reserved低16位=数据场
 
 改动说明（V3→V4）：
   - 改读环形缓冲区（每路64槽×32B=2KB，一次DMA整块读）
@@ -53,6 +57,7 @@ SLOT_RS422 = 0x60
 RING_USB   = 0x100
 RING_PS2   = 0x900
 RING_RS422 = 0x1100
+RING_CAN   = 0x1900   # CAN环形区紧随RS422(0x1100+0x800=0x1900)
 RING_SLOTS = 64
 RING_BYTES = RING_SLOTS * SLOT_SIZE  # 2048字节，64的倍数满足XDMA读要求
 
@@ -247,6 +252,58 @@ def parse_ps2_packet(data_payload, dlen):
     return x, y, left, right, middle
 
 
+# ===== CAN 协议帧 ID（29位扩展帧，A825/ARINC825）=====
+CAN_ID_TRACKBALL = 0x01180118   # 轨迹球数据（轨迹球→测试系统，4字节）
+CAN_ID_VER_QUERY = 0x01180119   # 软件版本查询（测试系统→轨迹球，4字节）
+CAN_ID_VER_REPLY = 0x01180117   # 软件版本回复（轨迹球→测试系统，3字节）
+CAN_ID_PBIT      = 0x01180116   # 上电PBIT（轨迹球→测试系统，6字节，连续5帧）
+CAN_ID_MODEL     = 0x01180115   # 设备型号（轨迹球→测试系统，6字节，连续3帧）
+
+CAN_FRAME_NAMES = {
+    CAN_ID_TRACKBALL: "轨迹球数据",
+    CAN_ID_VER_QUERY: "版本查询",
+    CAN_ID_VER_REPLY: "版本回复",
+    CAN_ID_PBIT:      "上电PBIT",
+    CAN_ID_MODEL:     "设备型号",
+}
+
+
+def parse_can_frame(data_payload, dlen, reserved):
+    """解析 CAN 槽位数据：data[0..3]=can_id(小端29位), data[4..7]=数据前4字节,
+    reserved低16位=数据第5/6字节。返回 (can_id, data_list) 或 None"""
+    if len(data_payload) < 4:
+        return None
+    can_id = struct.unpack_from('<I', data_payload, 0)[0] & 0x1FFFFFFF
+    data = list(data_payload[4:8])
+    if dlen > 4:
+        data.append(reserved & 0xFF)
+    if dlen > 5:
+        data.append((reserved >> 8) & 0xFF)
+    return can_id, data[:dlen]
+
+
+def format_can_data(can_id, data):
+    """按帧 ID 解析并格式化 CAN 数据场"""
+    # 轨迹球数据：4字节位域（小端：bit0右/bit1左/bit2-9Y/bit10-17X/bit18-25滚轮）
+    if can_id == CAN_ID_TRACKBALL and len(data) >= 4:
+        raw = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)
+        right = raw & 0x01
+        left = (raw >> 1) & 0x01
+        y = (raw >> 2) & 0xFF
+        x = (raw >> 10) & 0xFF
+        wheel = (raw >> 18) & 0xFF
+        return f"X{x:+#d} Y{y:+#d} 滚轮{wheel:+#d} [左:{left} 右:{right}]"
+    # 版本回复：3字节 主.次.修订
+    if can_id == CAN_ID_VER_REPLY and len(data) >= 3:
+        return f"版本 {data[0]}.{data[1]:02d}.{data[2]:02d}"
+    # 设备型号：6字节 ASCII
+    if can_id == CAN_ID_MODEL and len(data) >= 1:
+        s = bytes(data).decode('ascii', errors='replace').strip('\x00')
+        return f"型号 \"{s}\""
+    # 版本查询/PBIT/未知：原始 hex
+    return " ".join(f"{b:02X}" for b in data)
+
+
 def ev_type_name(typ):
     names = {EV_SYN: "SYN", EV_KEY: "KEY", EV_REL: "REL"}
     return names.get(typ, f"0x{typ:X}")
@@ -280,7 +337,12 @@ def format_payload(dev_id, data_payload, dlen, reserved=0):
             typ, code, val = parsed
             return f"{ev_type_name(typ)} {ev_code_name(typ, code)}={format_value(typ, code, val)}"
     elif dev_id == DEV_CAN:
-        # CAN帧数据（原始字节）
+        # CAN帧：data[0..3]=can_id, data[4..7]+reserved=数据
+        parsed = parse_can_frame(data_payload, dlen, reserved)
+        if parsed:
+            can_id, data = parsed
+            name = CAN_FRAME_NAMES.get(can_id, "未知帧")
+            return f"{name}(0x{can_id:08X})[{dlen}B]: {format_can_data(can_id, data)}"
         return f"CAN帧[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_PS2:
         # 标准PS/2鼠标3字节数据包解析
@@ -305,7 +367,7 @@ def format_payload(dev_id, data_payload, dlen, reserved=0):
 
 
 def main():
-    print("=== PC端三路数据接收程序 V4（USB/PS2/RS422 环形缓冲零丢帧）===\n")
+    print("=== PC端四路数据接收程序 V5（USB/CAN/PS2/RS422 环形缓冲零丢帧）===\n")
 
     # 查找XDMA设备
     print("查找XDMA设备...")
@@ -324,8 +386,9 @@ def main():
         return 1
     print("C2H设备打开成功\n")
 
-    # 三路环形缓冲轮询配置：(环形区偏移, 接口名, 期望device_id)
+    # 四路环形缓冲轮询配置：(环形区偏移, 接口名, 期望device_id)
     poll_rings = [(RING_USB, "USB", DEV_USB),
+                  (RING_CAN, "CAN", DEV_CAN),
                   (RING_PS2, "PS2", DEV_PS2),
                   (RING_RS422, "RS422", DEV_RS422)]
 
@@ -345,7 +408,7 @@ def main():
     # 时钟偏差校准值（首次收到事件时自动设置基准）
     clock_offset = None
 
-    print("等待事件... (动两只鼠标试试，Ctrl+C退出)\n")
+    print("等待事件... (动鼠标/发CAN帧试试，Ctrl+C退出)\n")
     print("序号    | 接口 | 数据内容                    | 延时(us) | 开发板时间戳")
     print("-" * 80)
 

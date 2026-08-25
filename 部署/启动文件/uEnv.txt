@@ -1,0 +1,9 @@
+bitstream_load_address=0x100000
+bitstream_image=system.bit
+bitstream_size=0x400000
+kernel_image=zImage
+kernel_load_address=0x2000000
+devicetree_image=system.dtb
+devicetree_load_address=0x2A00000
+uenvcmd=run sdboot
+sdboot=if mmcinfo; then fatload mmc 0 ${bitstream_load_address} ${bitstream_image} && fpga loadb 0 ${bitstream_load_address} ${bitstream_size} && fatload mmc 0 ${devicetree_load_address} ${devicetree_image} && fatload mmc 0 ${kernel_load_address} ${kernel_image} && bootz ${kernel_load_address} - ${devicetree_load_address}; fi
