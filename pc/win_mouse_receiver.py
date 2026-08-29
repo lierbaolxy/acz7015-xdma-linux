@@ -235,21 +235,27 @@ def parse_usb_event(data_payload):
 
 
 def parse_ps2_packet(data_payload, dlen):
-    """解析标准PS/2鼠标3字节数据包，返回(x,y,左,右,中)
+    """解析PS/2鼠标4字节数据包(含滚轮)，返回(x,y,z,左,右,中)
 
     Byte0: [Y溢出][X溢出][Y符号][X符号][1][中键][右键][左键]
     Byte1: X位移(9位补码低8位，右为正)
     Byte2: Y位移(9位补码低8位，PS/2约定上为正)
+    Byte3: Z滚轮(8位补码，上为正)
     """
     if dlen < 3 or len(data_payload) < 3:
         return None
     b0, b1, b2 = data_payload[0], data_payload[1], data_payload[2]
     x = b1 - 256 if (b0 & 0x10) else b1   # X符号位bit4
     y = b2 - 256 if (b0 & 0x20) else b2   # Y符号位bit5
+    # 滚轮：第4字节，8位补码
+    z = 0
+    if dlen >= 4 and len(data_payload) >= 4:
+        b3 = data_payload[3]
+        z = b3 - 256 if (b3 & 0x80) else b3
     left   = b0 & 0x01
     right  = (b0 >> 1) & 0x01
     middle = (b0 >> 2) & 0x01
-    return x, y, left, right, middle
+    return x, y, z, left, right, middle
 
 
 # ===== CAN 协议帧 ID（29位扩展帧，A825/ARINC825）=====
@@ -345,11 +351,11 @@ def format_payload(dev_id, data_payload, dlen, reserved=0):
             return f"{name}(0x{can_id:08X})[{dlen}B]: {format_can_data(can_id, data)}"
         return f"CAN帧[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_PS2:
-        # 标准PS/2鼠标3字节数据包解析
-        parsed = parse_ps2_packet(data_payload, dlen)
+        # PS2 路统一使用 input_event 格式（与 USB 一致）
+        parsed = parse_usb_event(data_payload)
         if parsed:
-            x, y, left, right, middle = parsed
-            return f"X{x:+d} Y{y:+d} [L:{left} R:{right} M:{middle}]"
+            typ, code, value = parsed
+            return f"{ev_type_name(typ)} {ev_code_name(typ, code)} = {value}"
         return f"PS2[{dlen}B]: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
     elif dev_id == DEV_RS422:
         # 设备型号D7分片：reserved低位=16标记16字节型号，高位=片序号，data为裸字节

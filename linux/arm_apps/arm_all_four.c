@@ -156,7 +156,7 @@ typedef struct {
 
 /* PS/2帧聚合器 */
 typedef struct {
-    int      dx, dy;
+    int      dx, dy, dz;
     uint8_t  btn;
     int      dirty;
 } ps2_agg_t;
@@ -214,10 +214,11 @@ static void uart_send_cmd2(volatile uint32_t *uart, uint8_t c1, uint8_t c2)
 }
 
 /* ===== PS/2 标准数据包构造 ===== */
-static void ps2_build_packet(const ps2_agg_t *a, uint8_t pkt[3])
+static void ps2_build_packet(const ps2_agg_t *a, uint8_t pkt[4])
 {
     int x = a->dx;
     int y = -a->dy;
+    int z = a->dz;
     uint8_t b0 = 0x08;
 
     b0 |= (uint8_t)(a->btn & 0x07);
@@ -229,9 +230,14 @@ static void ps2_build_packet(const ps2_agg_t *a, uint8_t pkt[3])
     if (y < -256) { y = -256; b0 |= 0x80; }
     if (y < 0)      b0 |= 0x20;
 
+    /* 滚轮限制在 -8~+7 */
+    if (z > 7)  z = 7;
+    if (z < -8) z = -8;
+
     pkt[0] = b0;
     pkt[1] = (uint8_t)(x & 0xFF);
     pkt[2] = (uint8_t)(y & 0xFF);
+    pkt[3] = (uint8_t)(z & 0xFF);
 }
 
 /* ===== USB 事件名称辅助 ===== */
@@ -870,8 +876,8 @@ int main(int argc, char *argv[])
         nfd++;
     }
 
-    if (nfd == 0) {
-        printf("[错误] 无可监听设备(CAN/USB/PS2 均失败)，退出\n");
+    if (nfd == 0 && !uart) {
+        printf("[错误] 四路设备(CAN/USB/PS2/RS422)均失败，退出\n");
         close(fd_mem);
         return 1;
     }
@@ -965,45 +971,21 @@ int main(int argc, char *argv[])
                            ev_code_name(ev.type, ev.code), ev.value);
                 }
             } else if (pfds[i].fd == fd_ps2) {
-                if (ev.type == EV_REL) {
-                    if (ev.code == REL_X)      { agg.dx += ev.value; agg.dirty = 1; }
-                    else if (ev.code == REL_Y) { agg.dy += ev.value; agg.dirty = 1; }
-                } else if (ev.type == EV_KEY) {
-                    uint8_t mask = 0;
-                    switch (ev.code) {
-                        case BTN_LEFT:   mask = 0x01; break;
-                        case BTN_RIGHT:  mask = 0x02; break;
-                        case BTN_MIDDLE: mask = 0x04; break;
-                        default: break;
-                    }
-                    if (mask) {
-                        if (ev.value) agg.btn |= mask;
-                        else          agg.btn &= (uint8_t)~mask;
-                        agg.dirty = 1;
-                    }
-                } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-                    if (agg.dirty) {
-                        uint8_t pkt[3];
-                        struct timespec ts;
-                        clock_gettime(CLOCK_REALTIME, &ts);
-                        ps2_build_packet(&agg, pkt);
+                if (ev.type != EV_SYN && ev.type != EV_MSC) {
+                    usb_event_t ps2_ev;
+                    ps2_ev.type  = ev.type;
+                    ps2_ev.code  = ev.code;
+                    ps2_ev.value = ev.value;
 
-                        slot_publish(ddr_base, SLOT_PS2, RING_PS2, DEV_PS2,
-                                     pkt, 3,
-                                     (uint32_t)ts.tv_sec,
-                                     (uint32_t)ts.tv_nsec,
-                                     &ps2_seq);
+                    slot_publish(ddr_base, SLOT_PS2, RING_PS2, DEV_PS2,
+                                 (const uint8_t *)&ps2_ev, sizeof(ps2_ev),
+                                 (uint32_t)ev.time.tv_sec,
+                                 (uint32_t)ev.time.tv_usec * 1000,
+                                 &ps2_seq);
 
-                        printf("[PS/2 #%u] 帧 %02X %02X %02X (X%+d Y%+d L%d R%d M%d)\n",
-                               ps2_seq, pkt[0], pkt[1], pkt[2],
-                               agg.dx, -agg.dy,
-                               agg.btn & 0x01, (agg.btn >> 1) & 0x01,
-                               (agg.btn >> 2) & 0x01);
-
-                        agg.dx = 0;
-                        agg.dy = 0;
-                        agg.dirty = 0;
-                    }
+                    printf("[PS/2 #%u] %s %s = %d\n",
+                           ps2_seq, ev_type_name(ev.type),
+                           ev_code_name(ev.type, ev.code), ev.value);
                 }
             }
         }
