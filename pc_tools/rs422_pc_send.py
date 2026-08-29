@@ -31,6 +31,8 @@ CMD_MAP = {
     0xD3: ("温度", 1),
     0xD4: ("电压", 2),
     0xD5: ("版本", 3),
+    0xD6: ("上电PBIT", 6),
+    0xD7: ("设备型号", 16),
 }
 
 
@@ -52,6 +54,22 @@ def main():
     print("=== RS422 协议帧发送(PC) ===")
     print("端口: %s  115200 8N1  轮数: %d  帧间隔: %dms\n" % (port, rounds, interval_ms))
 
+    # 上电时序：PBIT×5 + 型号×3（协议要求上电后连续发送）
+    pbit_data = [0x04, 0x22, 0x22, 0x04, 0x22, 0x22]
+    model_data = list(b"IDCH20-427-AXXX".ljust(16, b'\x00'))  # 16字节CHAR,不足补0(协议要求16字节)
+    print("--- 上电时序 ---")
+    for i in range(5):
+        f = build_frame(0xD6, pbit_data)
+        ser.write(f)
+        print("[PBIT #%d/5] %s" % (i + 1, " ".join("%02X" % b for b in f)))
+        time.sleep(0.05)
+    for i in range(3):
+        f = build_frame(0xD7, model_data)
+        ser.write(f)
+        print("[型号 #%d/3] %s" % (i + 1, " ".join("%02X" % b for b in f)))
+        time.sleep(0.05)
+    print("--- 上电时序完成 ---\n")
+
     for r in range(rounds):
         # 位移 D1(3B): 左键交替 + X/Y（int8 补码，&0xFF 转字节）
         x = ((r % 30) - 15) & 0xFF
@@ -70,7 +88,7 @@ def main():
             time.sleep(interval_ms / 1000.0)
 
     ser.close()
-    print("\n=== 发送完成: %d 帧（%d 轮 x 5）===" % (rounds * 5, rounds))
+    print("\n=== 发送完成: %d 帧（上电8 + %d 轮 x 5）===" % (8 + rounds * 5, rounds))
 
 
 if __name__ == "__main__":
