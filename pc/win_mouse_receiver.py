@@ -362,9 +362,18 @@ def format_payload(dev_id, data_payload, dlen, reserved=0):
         if (reserved & 0xFFFF) == 16:
             frag = (reserved >> 16) & 0xFFFF
             return f"型号片{frag}: " + " ".join(f"{b:02X}" for b in data_payload[:dlen])
-        # 常规报文（data[0]=报文标识，后跟有效数据）
+        # 常规报文
         cmd_names = {0xD1: "位移", 0xD2: "状态", 0xD3: "温度", 0xD4: "电压",
                      0xD5: "版本", 0xD6: "上电PBIT"}
+        # 标准报文(0xD1~0xD5)为完整原始帧：0x55帧头+命令+数据+校验和
+        if dlen >= 4 and data_payload[0] == 0x55 and data_payload[1] in cmd_names:
+            cmd = data_payload[1]
+            body = data_payload[2:dlen - 1]   # 有效数据（末字节为校验和）
+            cks = data_payload[dlen - 1]
+            ok = "✓" if ((0x55 + cmd + sum(body)) & 0xFF) == cks else "✗校验错"
+            return f"{cmd_names[cmd]}: " + \
+                   " ".join(f"{b:02X}" for b in body) + f" [{ok}]"
+        # PBIT(0xD6)等维持精简格式：data[0]=报文标识，后跟有效数据
         if dlen >= 1 and data_payload[0] in cmd_names:
             return f"{cmd_names[data_payload[0]]}: " + \
                    " ".join(f"{b:02X}" for b in data_payload[1:dlen])

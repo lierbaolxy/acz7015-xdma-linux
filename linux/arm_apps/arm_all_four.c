@@ -58,6 +58,7 @@
 #define SLOT_CAN     0x20   /* 0x20000020 CAN */
 #define SLOT_PS2     0x40   /* 0x20000040 PS2 */
 #define SLOT_RS422   0x60   /* 0x20000060 RS422 */
+#define MAILBOX      0x80   /* 0x20000080 PC→ARM命令信箱（PC经H2C写，ARM轮询转发到UART1 TX）*/
 
 /* 环形缓冲区（每路64槽×32B=2KB）：记录历史帧，解决单槽覆盖丢帧
  * PC端一次DMA读整块2KB，按槽内seq升序回放 */
@@ -385,6 +386,7 @@ static int parser_feed(rs422_parser_t *p, uint8_t b)
         return 0;
     case 3:
         p->state = 0;
+        p->rx_checksum = b;   /* 保存原始校验和字节 */
         return ((p->checksum & 0xFF) == b) ? 1 : 0;
     default:
         p->state = 0;
@@ -701,6 +703,7 @@ int main(int argc, char *argv[])
     struct pollfd pfds[3];
     int nfd = 0;
     uint32_t usb_seq = 0, ps2_seq = 0, rs422_seq = 0;
+    uint32_t mailbox_seq = 0;  /* PC命令信箱已处理序号（PC递增，ARM检测变化后转发）*/
     const char *usb_dev = "/dev/input/event1";
     const char *ps2_dev = "/dev/input/event4";
     int baud = 9600;
@@ -840,8 +843,12 @@ int main(int argc, char *argv[])
     memset((void *)(ddr_base + SLOT_CAN),   0, sizeof(share_slot_t));
     memset((void *)(ddr_base + SLOT_PS2),   0, sizeof(share_slot_t));
     memset((void *)(ddr_base + SLOT_RS422), 0, sizeof(share_slot_t));
+    /* 清零PC命令信箱（避免上电残留非0 seq让ARM误判有命令）*/
+    memset((void *)(ddr_base + MAILBOX), 0, sizeof(share_slot_t));
     syscall(__ARM_NR_cacheflush, (long)(ddr_base + SLOT_USB),
             (long)(ddr_base + SLOT_RS422 + sizeof(share_slot_t)), 0);
+    syscall(__ARM_NR_cacheflush, (long)(ddr_base + MAILBOX),
+            (long)(ddr_base + MAILBOX + sizeof(share_slot_t)), 0);
 
     /* 4. 打开并配置 CAN（失败仅禁用 CAN 路）*/
     if (open_uart(CAN_DEV, baud) < 0) {
@@ -1008,13 +1015,29 @@ int main(int argc, char *argv[])
                                          (uint32_t)ts.tv_nsec,
                                          &rs422_seq);
                 } else {
+                    /* 标准报文(0xD1~0xD5)透传完整原始帧：0x55帧头+命令+数据+校验和；
+                     * 其他(如PBIT 0xD6)维持精简格式：命令+数据 */
+                    uint8_t is_standard = (parser.cmd >= RS422_CMD_DISPLACEMENT &&
+                                           parser.cmd <= RS422_CMD_VERSION);
                     uint8_t payload[8];
-                    payload[0] = parser.cmd;
-                    for (k = 0; k < parser.data_len && k < 7; k++)
-                        payload[1 + k] = parser.buf[k];
+                    uint32_t len;
+
+                    if (is_standard) {
+                        payload[0] = RS422_FRAME_HEAD;
+                        payload[1] = parser.cmd;
+                        for (k = 0; k < parser.data_len; k++)
+                            payload[2 + k] = parser.buf[k];
+                        payload[2 + parser.data_len] = parser.rx_checksum;
+                        len = (uint32_t)(2 + parser.data_len + 1);
+                    } else {
+                        payload[0] = parser.cmd;
+                        for (k = 0; k < parser.data_len && k < 7; k++)
+                            payload[1 + k] = parser.buf[k];
+                        len = (uint32_t)(1 + parser.data_len);
+                    }
 
                     slot_publish(ddr_base, SLOT_RS422, RING_RS422, DEV_RS422,
-                                 payload, (uint32_t)(1 + parser.data_len),
+                                 payload, len,
                                  (uint32_t)ts.tv_sec,
                                  (uint32_t)ts.tv_nsec,
                                  &rs422_seq);
@@ -1044,6 +1067,33 @@ int main(int argc, char *argv[])
             if (elapsed_us >= period_us) {
                 uart_send_cmd2(uart, CMD_RM_QUERY, CMD_RM_QUERY);
                 last_query = now;
+            }
+        }
+
+        /* 6.5 PC命令信箱：PC经H2C写命令到0x20000080，ARM检测seq变化后转发到UART1 TX
+         * 信箱复用share_slot_t：seq=序号 device_id=0xCC校验 data_len=命令码
+         *                    reserved=参数长度 data[0..5]=参数字节
+         * cacheflush(invalidate)使ARM cache失效，才能看到PC经XDMA写入的DDR数据 */
+        {
+            volatile share_slot_t *mbox = (volatile share_slot_t *)(ddr_base + MAILBOX);
+            syscall(__ARM_NR_cacheflush, (long)mbox,
+                    (long)((char *)mbox + sizeof(share_slot_t)), 0);
+            uint32_t cur_seq = mbox->seq;
+            if (cur_seq != mailbox_seq && mbox->device_id == 0xCC) {
+                uint8_t cmd  = (uint8_t)(mbox->data_len & 0xFF);
+                uint8_t plen = (uint8_t)(mbox->reserved & 0xFF);
+                if (cmd != 0) {
+                    printf("[PC命令] seq=%u cmd=0x%02X plen=%u\n", cur_seq, cmd, plen);
+                    /* 发命令码：0xEB发2字节(协议约定)，其余发3字节 */
+                    if (cmd == CMD_RM_QUERY) uart_send_cmd2(uart, cmd, cmd);
+                    else                    uart_send_cmd3(uart, cmd);
+                    /* 配置类命令(0xF3采样率/0xE8分辨率)：等5-10ms再发参数 */
+                    if (plen > 0 && plen <= 6) {
+                        usleep(7000);
+                        uart_send_bytes(uart, (const uint8_t *)mbox->data, plen);
+                    }
+                }
+                mailbox_seq = cur_seq;
             }
         }
     }

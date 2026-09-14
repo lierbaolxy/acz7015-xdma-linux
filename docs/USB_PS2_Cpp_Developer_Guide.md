@@ -281,3 +281,258 @@ sudo ./arm_all_four /dev/input/event4 /dev/input/event2
 USB HID 鼠标注册两个接口：
 - input0（键盘接口，无 REL，发按键事件）→ 忽略
 - input1（鼠标接口，有 REL，发位移事件）→ 用这个
+
+## 十、RS422 通信（PC 应用开发）
+
+RS422 路分两个方向：**数据上行**（PC 读轨迹球上报数据）和 **命令下行**（PC 发命令给轨迹球）。
+
+### 10.1 数据上行（PC 读）
+
+| 参数 | 值 |
+|---|---|
+| 读取地址 | `0x20001100`（环形区，**推荐**） |
+| 每次读取 | 2048 字节（64 槽 × 32B） |
+| 单槽（legacy） | `0x20000060`（仅最新帧，高速丢帧，不建议用） |
+| device_id | `3` |
+
+槽位格式同 `ShareSlot`（32 字节）。**标准报文（0xD1~0xD5）为完整原始帧透传**：`data[]` 含 0x55 帧头 + 命令 + 有效数据 + 校验和，PC 可二次校验：
+
+| 帧类型 | data_len | data[] 内容 |
+|---|---|---|
+| 位移信息 (0xD1) | 6 | `55 D1` + X Y 按键 + 校验 |
+| 状态信息 (0xD2) | 6 | `55 D2` + 模式/分辨率/采样率 + 校验 |
+| BIT 温度 (0xD3) | 4 | `55 D3` + 温度值(℃) + 校验 |
+| BIT 电压 (0xD4) | 5 | `55 D4` + 电压(2B) + 校验 |
+| 软件版本 (0xD5) | 6 | `55 D5` + 版本号(3B) + 校验 |
+| 上电 PBIT (0xD6) | 7 | **精简格式**：`D6` + PBIT 数据(6B) |
+| 设备型号 (0xD7) | 8×2片 | 16 字节拆 2 槽 |
+
+**解析要点**：`data[0]==0x55` 即完整帧，`data[1]`=命令码，有效数据=`data[2..data_len-2]`，末字节=校验和（算法：`(0x55+命令+数据)&0xFF`）；`data[0]` 为命令码则是精简格式（PBIT）。
+
+**位移有效数据位定义**（完整帧 data[2..4]）：data[2].bit7=X符号，data[3].bit7=Y符号，data[4].bit6=模式(1=Remote)，bit1=右键，bit0=左键。
+
+**设备型号分片**：16 字节超 data[8] 上限拆 2 片，`reserved=(片序<<16)|16`，片0=前8字节、片1=后8字节。
+
+```cpp
+// 读 RS422 环形区（device_id=3）
+void readRs422(HANDLE hC2H) {
+    ShareSlot slots[64];
+    LARGE_INTEGER off; off.QuadPart = 0x20000000ULL + 0x1100;
+    SetFilePointerEx(hC2H, off, NULL, FILE_BEGIN);
+    DWORD ret = 0;
+    ReadFile(hC2H, slots, 2048, &ret, NULL);
+    // 遍历 slots，筛 device_id==3 且 seq>lastSeq，按 seq 升序回放
+}
+```
+
+### 10.1.1 RS422 完整接收示例（C++）
+
+```cpp
+#include <windows.h>
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+
+#pragma pack(push, 1)
+struct ShareSlot {
+    uint32_t seq;
+    uint32_t device_id;
+    uint32_t data_len;
+    uint32_t reserved;
+    uint8_t  data[8];
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+};
+#pragma pack(pop)
+static_assert(sizeof(ShareSlot) == 32, "ShareSlot must be 32 bytes");
+
+#define DEV_RS422    3
+#define RING_RS422   0x20001100ULL
+#define RING_BYTES   2048        // 64 槽 × 32B
+#define RING_SLOTS   64
+
+// 设备型号分片缓存（16 字节拆 2 槽，reserved 高位=片序）
+static char    g_model[17] = {0};
+static uint8_t g_modelMask = 0;   // bit0=收到片0, bit1=收到片1
+
+// 解析单个 RS422 槽位（device_id==3）
+// 标准报文(0xD1~0xD5)为完整帧：data[0]=0x55 data[1]=命令 data[2..n-2]=数据 data[n-1]=校验
+// PBIT(0xD6)为精简格式：data[0]=0xD6 data[1..6]=数据
+void parseRs422Slot(const ShareSlot& s) {
+    const uint8_t* d = s.data;
+    uint32_t n = s.data_len;
+
+    if (n >= 4 && d[0] == 0x55) {           // 完整原始帧
+        uint8_t cmd = d[1];
+        const uint8_t* body = d + 2;         // 有效数据
+        uint32_t blen = n - 3;               // 数据长度（去掉帧头/命令/校验）
+        uint8_t cks = d[n - 1];
+        // 二次校验
+        uint32_t sum = 0x55 + cmd;
+        for (uint32_t i = 0; i < blen; i++) sum += body[i];
+        if ((sum & 0xFF) != cks) { printf("[RS422] 校验错 seq=%u\n", s.seq); return; }
+
+        switch (cmd) {
+        case 0xD1: {  // 位移：body[0]=X body[1]=Y body[2]=按键/模式
+            int x = body[0] & 0x7F; if (body[0] & 0x80) x = -x;
+            int y = body[1] & 0x7F; if (body[1] & 0x80) y = -y;
+            printf("[RS422] 位移 X=%+d Y=%+d 模式=%s 左=%d 右=%d\n",
+                   x, y, (body[2] & 0x40) ? "Remote" : "Stream",
+                   body[2] & 0x01, (body[2] & 0x02) ? 1 : 0);
+            break;
+        }
+        case 0xD3:  // 温度
+            printf("[RS422] 温度 %d ℃\n", (int)(int8_t)body[0]);
+            break;
+        case 0xD4:  // 电压
+            printf("[RS422] 电压 raw=%02X %02X\n", body[0], body[1]);
+            break;
+        case 0xD2:  // 状态
+            printf("[RS422] 状态 模式=%d 分辨率=%d 采样率=%d\n",
+                   body[0], body[1], body[2]);
+            break;
+        case 0xD5:  // 版本
+            printf("[RS422] 版本 %d.%02d.%02d\n", body[0], body[1], body[2]);
+            break;
+        default:
+            printf("[RS422] cmd=0x%02X len=%u\n", cmd, blen);
+            break;
+        }
+        return;
+    }
+
+    if (n == 7 && d[0] == 0xD6) {           // PBIT 精简格式
+        printf("[RS422] PBIT %02X %02X %02X %02X %02X %02X\n",
+               d[1], d[2], d[3], d[4], d[5], d[6]);
+        return;
+    }
+
+    if (n == 8 && (s.reserved & 0xFF) == 16) {  // 设备型号分片
+        int piece = (s.reserved >> 16) & 0xFF;
+        memcpy(g_model + piece * 8, d, 8);
+        g_modelMask |= (1 << piece);
+        if (g_modelMask == 0x3) {
+            g_model[16] = 0;
+            printf("[RS422] 设备型号 %s\n", g_model);
+            g_modelMask = 0;
+        }
+        return;
+    }
+
+    printf("[RS422] len=%u data=", n);
+    for (uint32_t i = 0; i < n && i < 8; i++) printf("%02X ", d[i]);
+    printf("\n");
+}
+
+// 环形区接收主函数：死循环读 0x20001100，按 seq 回放新帧
+void rs422ReceiveLoop(HANDLE hC2H) {
+    ShareSlot slots[RING_SLOTS];
+    uint32_t lastSeq = 0;
+    bool first = true;
+
+    while (true) {
+        LARGE_INTEGER off; off.QuadPart = RING_RS422;
+        SetFilePointerEx(hC2H, off, NULL, FILE_BEGIN);
+        DWORD ret = 0;
+        if (!ReadFile(hC2H, slots, RING_BYTES, &ret, NULL) || ret < RING_BYTES)
+            continue;
+
+        // 找本块内 device_id==3 的最大 seq
+        uint32_t maxSeq = lastSeq;
+        for (int i = 0; i < RING_SLOTS; i++)
+            if (slots[i].device_id == DEV_RS422 && slots[i].seq > maxSeq)
+                maxSeq = slots[i].seq;
+
+        if (first) { lastSeq = maxSeq; first = false; continue; }  // 建立基线
+        if (maxSeq <= lastSeq) continue;                           // 无新帧
+
+        if (maxSeq - lastSeq > RING_SLOTS)
+            printf("[RS422 提示] 丢帧 %u 帧（环形覆盖）\n", maxSeq - lastSeq - RING_SLOTS);
+
+        // 按 seq 升序回放新帧（环形从 lastSeq+1 开始扫）
+        for (uint32_t q = lastSeq + 1; q <= maxSeq; q++) {
+            int idx = q % RING_SLOTS;
+            if (slots[idx].device_id == DEV_RS422 && slots[idx].seq == q)
+                parseRs422Slot(slots[idx]);
+        }
+        lastSeq = maxSeq;
+    }
+}
+```
+
+**要点**：
+- 每次从 `0x20001100` 读 2048 字节（整环），不能只读单槽
+- 用 `lastSeq` 去重，只回放 `seq > lastSeq` 的新槽
+- 槽下标 = `seq % 64`（板端按此写环）
+- `seq` 跳变 >64 说明环形覆盖丢帧
+- 设备型号 16 字节拆 2 槽，用 `reserved` 拼片
+- 完整帧带命令码（data[1]），位移/状态/版本不再混淆，且 PC 可用末字节校验和二次校验
+
+### 10.2 命令下行（PC 发）
+
+PC 经 XDMA **H2C** 通道写命令信箱，ARM 轮询后转发到 UART1 TX 发给轨迹球。
+
+| 参数 | 值 |
+|---|---|
+| 写入地址 | `0x20000080` |
+| 每次写入 | 32 字节 |
+| 通道 | h2c_0（GENERIC_WRITE 打开） |
+
+信箱格式（32 字节，复用槽位结构）：
+
+```cpp
+#pragma pack(push, 1)
+struct CmdMailbox {
+    uint32_t seq;        // 命令序号，每发一条+1（ARM 据此判断新命令）
+    uint32_t device_id;  // 固定 0xCC（信箱标识）
+    uint32_t data_len;   // 命令码（见下表）
+    uint32_t reserved;   // 参数长度（无参数=0）
+    uint8_t  data[8];    // 参数字节
+    uint32_t tv_sec;     // 0
+    uint32_t tv_nsec;    // 0
+};
+#pragma pack(pop)
+```
+
+**命令码对照表**：
+
+| 命令 | 命令码(data_len) | 参数 | 轨迹球收到 |
+|---|---|---|---|
+| 切 Stream | `0xEA` | 无 | 0xEA×3 |
+| 切 Remote | `0xF0` | 无 | 0xF0×3 |
+| 位移查询(Remote) | `0xEB` | 无 | 0xEB×2 |
+| 状态查询 | `0xE9` | 无 | 0xE9×3 |
+| 温度查询 | `0xE4` | 无 | 0xE4×3 |
+| 电压查询 | `0xE3` | 无 | 0xE3×3 |
+| 版本查询 | `0xE2` | 无 | 0xE2×3 |
+| 采样率配置 | `0xF3` | reserved=1, data[0]=Hz/10 | 0xF3×3+参数 |
+| 分辨率配置 | `0xE8` | reserved=1, data[0]=档位0-10 | 0xE8×3+参数 |
+
+```cpp
+// PC 下发命令示例：切 Remote 模式
+void sendRs422Cmd(HANDLE hH2C, uint32_t& seq, uint32_t cmd, uint8_t param=0, uint32_t plen=0) {
+    CmdMailbox mb = {};
+    mb.seq = seq++;           // 递增，ARM 检测变化
+    mb.device_id = 0xCC;
+    mb.data_len = cmd;
+    mb.reserved = plen;
+    mb.data[0] = param;
+    LARGE_INTEGER off; off.QuadPart = 0x20000000ULL + 0x80;
+    SetFilePointerEx(hH2C, off, NULL, FILE_BEGIN);
+    DWORD ret = 0;
+    WriteFile(hH2C, &mb, 32, &ret, NULL);  // 一次写 32 字节
+}
+```
+
+### 10.3 工作模式
+
+| 模式 | 触发 | 轨迹球行为 |
+|---|---|---|
+| Stream（默认） | 发 `0xEA` | 移动/按键实时主动上报 |
+| Remote | 发 `0xF0` | 被动等 `0xEB` 查询才回帧（3-5ms 周期） |
+
+### 10.4 参考实现
+
+- PC 接收：`pc/win_mouse_receiver.py`（四路，含 RS422 解析）
+- PC 命令下发：`pc/rs422_pc_cmd.py`（H2C 写信箱，支持 9 种命令）
+- 详细协议：`docs/PC_RS422_Communication_Protocol.md`
