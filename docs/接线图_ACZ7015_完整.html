@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ACZ7015 轨迹球采集系统 · 完整接线图</title>
+<style>
+  :root{
+    --bg:#eef2f7; --card:#ffffff; --line:#cbd5e1; --text:#1e293b; --muted:#64748b;
+    --pwr:#dc2626; --pwr2:#ea580c; --gnd:#334155; --tx:#16a34a; --rx:#7c3aed;
+    --relay:#2563eb; --contact:#b45309; --usb:#ea580c; --bus:#64748b;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;padding:26px;background:var(--bg);color:var(--text);
+    font-family:'Microsoft YaHei','PingFang SC','Segoe UI',sans-serif;}
+  .page{max-width:1820px;margin:0 auto;}
+  h1{font-size:25px;margin:0 0 8px;letter-spacing:.5px;}
+  .sub{color:var(--muted);font-size:13px;line-height:1.7;}
+  .board{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:10px;margin-top:16px;box-shadow:0 6px 20px rgba(15,23,42,.07);}
+  svg{display:block;width:100%;height:auto;font-family:'Microsoft YaHei','PingFang SC',sans-serif;}
+  h2{font-size:17px;margin:28px 0 12px;}
+  .legend{display:flex;flex-wrap:wrap;gap:16px 30px;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;padding:16px 20px;font-size:13px;}
+  .legend i{display:inline-block;width:30px;height:4px;border-radius:2px;margin-right:8px;vertical-align:middle;}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;overflow:hidden;font-size:13px;}
+  th,td{padding:8px 11px;text-align:left;border-bottom:1px solid #e2e8f0;vertical-align:top;}
+  th{background:#f8fafc;font-weight:600;color:#334155;white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  td.n{white-space:nowrap;}
+  td.c{white-space:nowrap;color:#475569;}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;}
+  .warn{background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:16px 22px;
+    font-size:13px;line-height:2;}
+  .warn b{color:#c2410c;}
+  .note{background:#f0f9ff;border:1px solid #7dd3fc;border-radius:12px;padding:14px 22px;font-size:13px;line-height:1.9;margin-top:12px;}
+  footer{margin-top:22px;color:var(--muted);font-size:12px;line-height:1.8;}
+
+  .card{fill:#fff;stroke:#cbd5e1;stroke-width:1.6;}
+  .card-head{fill:#f8fafc;stroke:#e2e8f0;}
+  .title{font-size:21px;font-weight:700;}
+  .sub2{font-size:11.5px;fill:#64748b;}
+  .th{font-size:11.5px;fill:#64748b;}
+  .sig{font-size:12.5px;fill:#1e293b;}
+  .dst{font-size:11.5px;fill:#475569;}
+  .pin{font-size:10.5px;fill:#fff;text-anchor:middle;font-weight:600;font-family:Consolas,Menlo,monospace;}
+  .term{font-size:11.5px;fill:#1e293b;}
+  .term-s{font-size:10.5px;fill:#64748b;}
+  .halo{fill:none;stroke:#fff;stroke-width:8;stroke-linecap:round;stroke-linejoin:round;}
+  .w3{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;}
+  .w2{fill:none;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;}
+  .w5{fill:none;stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round;}
+  .w4{fill:none;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;}
+  .lbl{font-size:10.5px;fill:#334155;font-weight:600;}
+  .lblbg{fill:#fff;stroke:#e2e8f0;stroke-width:1;}
+  .junction{fill:#fff;stroke:#475569;stroke-width:2;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>ACZ7015 轨迹球采集系统 · 完整接线图</h1>
+  <div class="sub">
+    板卡 ACZ7015（XC7Z015-2CLG485I） · 轨迹球 IDCH20-427（XS1 30 针） · 摩可灵 USB 转 RS422（CH340） · 单路继电器模块（SRD-03VDC-SL-C）
+  </div>
+</header>
+
+<div class="board">
+<svg viewBox="0 0 1760 1280" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <g>
+    <path class="halo" d="M630,172 H1180"/>
+    <path class="w3" stroke="#dc2626" d="M630,172 H1180"/>
+    <path class="halo" d="M630,198 H900 V202 H1180"/>
+    <path class="w3" stroke="#334155" d="M630,198 H900 V202 H1180"/>
+    <path class="halo" d="M630,224 H1100 V232 H1180"/>
+    <path class="w3" stroke="#ea580c" d="M630,224 H1100 V232 H1180"/>
+    <path class="halo" d="M608,593 H660 V1235 H1150 V1030"/>
+    <path class="w2" stroke="#ea580c" d="M608,593 H660 V1235 H1150 V1030"/>
+    <path class="halo" d="M630,250 H1060 V256 H1180"/>
+    <path class="w3" stroke="#334155" d="M630,250 H1060 V256 H1180"/>
+    <path class="halo" d="M608,619 H720 V1255 H1161 V1068"/>
+    <path class="w2" stroke="#334155" d="M608,619 H720 V1255 H1161 V1068"/>
+    <path class="halo" d="M1180,284 H1075 V1020 H1080"/>
+    <path class="w2" stroke="#16a34a" d="M1180,284 H1075 V1020 H1080"/>
+    <path class="halo" d="M1180,312 H1092 V1055 H1080"/>
+    <path class="w2" stroke="#16a34a" d="M1180,312 H1092 V1055 H1080"/>
+    <path class="halo" d="M1180,340 H1109 V1090 H1080"/>
+    <path class="w2" stroke="#7c3aed" d="M1180,340 H1109 V1090 H1080"/>
+    <path class="halo" d="M1180,368 H1126 V1125 H1080"/>
+    <path class="w2" stroke="#7c3aed" d="M1180,368 H1126 V1125 H1080"/>
+    <path class="halo" d="M700,1055 V790 H612"/>
+    <path class="w4" stroke="#ea580c" d="M700,1055 V790 H612"/>
+    <path class="halo" d="M630,380 H760 V890 H1301 V912"/>
+    <path class="w3" stroke="#2563eb" d="M630,380 H760 V890 H1301 V912"/>
+    <path class="halo" d="M630,440 H680 V912 H1180 V500"/>
+    <path class="w5" stroke="#64748b" d="M630,440 H680 V912 H1180 V500"/>
+    <path class="halo" d="M1421,912 V790 H1280 V800"/>
+    <path class="w2" stroke="#b45309" d="M1421,912 V790 H1280 V800"/>
+    <path class="halo" d="M1541,912 V820 H1455 V800"/>
+    <path class="w2" stroke="#92400e" d="M1541,912 V820 H1455 V800"/>
+    <circle class="junction" cx="608" cy="593" r="4.5"/>
+    <circle class="junction" cx="608" cy="619" r="4.5"/>
+  </g>
+
+  <g filter="url(#sh)">
+    <rect class="card" x="30" y="40" width="600" height="840" rx="14"/>
+  </g>
+  <text class="title" x="55" y="80" fill="#1e3a8a">ACZ7015（Zynq-7015）</text>
+  <text class="sub2" x="55" y="103">GPIO0（P7）40 针排针 · 仅列出使用中的针</text>
+  <rect x="52" y="112" width="556" height="402" rx="10" fill="#eff6ff" stroke="#60a5fa" stroke-width="1.8"/>
+  <rect x="64" y="104" width="160" height="24" rx="6" fill="#2563eb"/>
+  <text x="144" y="121" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">GPIO0（P7）</text>
+  <text x="234" y="121" font-size="10.5" fill="#64748b">40 针排针 · Type-C 旁</text>
+
+  <text class="th" x="70" y="136">针</text>
+  <text class="th" x="150" y="136">信号</text>
+  <text class="th" x="370" y="136">去向</text>
+  <line x1="55" y1="146" x2="605" y2="146" stroke="#e2e8f0"/>
+
+  <g>
+    <rect x="60" y="163" width="48" height="18" rx="4" fill="#dc2626"/>
+    <text class="pin" x="84" y="176">pin11</text>
+    <text class="sig" x="150" y="176" fill="#b91c1c" font-weight="700">5V</text>
+    <text class="dst" x="370" y="176">XS1-28（+5VD，轨迹球供电）</text>
+
+    <rect x="60" y="189" width="48" height="18" rx="4" fill="#334155"/>
+    <text class="pin" x="84" y="202">pin12</text>
+    <text class="sig" x="150" y="202" fill="#334155" font-weight="700">GND</text>
+    <text class="dst" x="370" y="202">XS1-27（轨迹球 GND）</text>
+
+    <rect x="60" y="215" width="48" height="18" rx="4" fill="#ea580c"/>
+    <text class="pin" x="84" y="228">pin29</text>
+    <text class="sig" x="150" y="228" fill="#c2410c" font-weight="700">3.3V</text>
+    <text class="dst" x="370" y="228">XS1-30（编码器 3.3V）</text>
+
+    <rect x="60" y="241" width="48" height="18" rx="4" fill="#334155"/>
+    <text class="pin" x="84" y="254">pin30</text>
+    <text class="sig" x="150" y="254" fill="#334155" font-weight="700">GND</text>
+    <text class="dst" x="370" y="254">XS1-29（第二路共地）</text>
+
+    <rect x="60" y="267" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="280">pin31</text>
+    <text class="sig" x="150" y="280">ENC1_A（编码器 1 A 相）</text>
+    <text class="dst" x="370" y="280">XS1-1</text>
+
+    <rect x="60" y="293" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="306">pin32</text>
+    <text class="sig" x="150" y="306">ENC1_B（编码器 1 B 相）</text>
+    <text class="dst" x="370" y="306">XS1-2</text>
+
+    <rect x="60" y="319" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="332">pin33</text>
+    <text class="sig" x="150" y="332">ENC2_A（编码器 2 A 相）</text>
+    <text class="dst" x="370" y="332">XS1-3</text>
+
+    <rect x="60" y="345" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="358">pin34</text>
+    <text class="sig" x="150" y="358">ENC2_B（编码器 2 B 相）</text>
+    <text class="dst" x="370" y="358">XS1-4</text>
+
+    <rect x="60" y="371" width="48" height="18" rx="4" fill="#7c3aed"/>
+    <text class="pin" x="84" y="384">pin35</text>
+    <text class="sig" x="150" y="384" fill="#6d28d9" font-weight="700">RELAY_OUT（E8）</text>
+    <text class="dst" x="370" y="384">继电器 IN（唯一控制信号）</text>
+
+    <rect x="60" y="397" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="410">pin37</text>
+    <text class="sig" x="150" y="410">KEY_UPR（UFR 上翻）</text>
+    <text class="dst" x="370" y="410">XS1-7</text>
+
+    <rect x="60" y="423" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="436">pin38</text>
+    <text class="sig" x="150" y="436">KEY_LWR（LWR 下翻）</text>
+    <text class="dst" x="370" y="436">XS1-8</text>
+
+    <rect x="60" y="449" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="462">pin39</text>
+    <text class="sig" x="150" y="462">KEY_ENTER（确认）</text>
+    <text class="dst" x="370" y="462">XS1-5</text>
+
+    <rect x="60" y="475" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="84" y="488">pin40</text>
+    <text class="sig" x="150" y="488">KEY_MENU（菜单）</text>
+    <text class="dst" x="370" y="488">XS1-6</text>
+  </g>
+
+  <rect x="52" y="566" width="556" height="126" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.8"/>
+  <rect x="64" y="554" width="160" height="24" rx="6" fill="#16a34a"/>
+  <text x="144" y="571" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">GPIO1（P9）</text>
+  <text x="234" y="571" font-size="10.5" fill="#15803d">继电器 VCC / GND · 按键旁</text>
+
+  <rect x="70" y="584" width="48" height="18" rx="4" fill="#ea580c"/>
+  <text class="pin" x="94" y="597">pin29</text>
+  <text class="sig" x="128" y="597" fill="#c2410c" font-weight="700">3.3V</text>
+  <text class="dst" x="175" y="597">→ 继电器 VCC（实际使用）</text>
+
+  <rect x="70" y="610" width="48" height="18" rx="4" fill="#334155"/>
+  <text class="pin" x="94" y="623">pin30</text>
+  <text class="sig" x="128" y="623" fill="#334155" font-weight="700">GND</text>
+  <text class="dst" x="175" y="623">→ 继电器 GND（实际使用）</text>
+
+  <text class="term-s" x="70" y="656" fill="#15803d">注：继电器 VCC/GND 实际取自本排针；IN 必须回 GPIO0 pin35（GPIO1 无 E8）</text>
+
+  <rect x="480" y="760" width="130" height="42" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.8"/>
+  <text class="term" x="545" y="779" text-anchor="middle" fill="#c2410c" font-weight="700">USB Host</text>
+  <text class="term-s" x="545" y="794" text-anchor="middle">USB-A 插座</text>
+  <text class="term-s" x="55" y="716">FPGA 逻辑：编码器 ×2、按键 ×4、继电器 ×1</text>
+  <text class="term-s" x="55" y="736">电源：5V（pin11）、3.3V（pin29）、GND（pin12 / pin30）</text>
+
+  <g filter="url(#sh)">
+    <rect class="card" x="1180" y="40" width="540" height="720" rx="14"/>
+  </g>
+  <text class="title" x="1205" y="80" fill="#0f766e">轨迹球 IDCH20-427</text>
+  <text class="sub2" x="1205" y="103">XS1 30 针接口 · 仅列出使用中的针</text>
+  <text class="th" x="1205" y="136">针</text>
+  <text class="th" x="1275" y="136">信号</text>
+  <text class="th" x="1480" y="136">连接</text>
+  <line x1="1205" y1="146" x2="1695" y2="146" stroke="#e2e8f0"/>
+
+  <g>
+    <rect x="1200" y="163" width="48" height="18" rx="4" fill="#dc2626"/>
+    <text class="pin" x="1224" y="176">28</text>
+    <text class="sig" x="1275" y="176" fill="#b91c1c" font-weight="700">+5VD</text>
+    <text class="dst" x="1480" y="176">← GPIO0 pin11（5V）</text>
+
+    <rect x="1200" y="191" width="48" height="18" rx="4" fill="#334155"/>
+    <text class="pin" x="1224" y="204">27</text>
+    <text class="sig" x="1275" y="204" fill="#334155" font-weight="700">GND</text>
+    <text class="dst" x="1480" y="204">← GPIO0 pin12（GND）</text>
+
+    <rect x="1200" y="219" width="48" height="18" rx="4" fill="#ea580c"/>
+    <text class="pin" x="1224" y="232">30</text>
+    <text class="sig" x="1275" y="232" fill="#c2410c" font-weight="700">+3V3D</text>
+    <text class="dst" x="1480" y="232">← GPIO0 pin29（3.3V）</text>
+
+    <rect x="1200" y="247" width="48" height="18" rx="4" fill="#334155"/>
+    <text class="pin" x="1224" y="260">29</text>
+    <text class="sig" x="1275" y="260" fill="#334155" font-weight="700">GND</text>
+    <text class="dst" x="1480" y="260">← GPIO0 pin30（GND）</text>
+
+    <rect x="1200" y="275" width="48" height="18" rx="4" fill="#16a34a"/>
+    <text class="pin" x="1224" y="288">21</text>
+    <text class="sig" x="1275" y="288">R+（球接收 +）</text>
+    <text class="dst" x="1480" y="288">← 模块 T+</text>
+
+    <rect x="1200" y="303" width="48" height="18" rx="4" fill="#16a34a"/>
+    <text class="pin" x="1224" y="316">23</text>
+    <text class="sig" x="1275" y="316">R−（球接收 −）</text>
+    <text class="dst" x="1480" y="316">← 模块 T−</text>
+
+    <rect x="1200" y="331" width="48" height="18" rx="4" fill="#7c3aed"/>
+    <text class="pin" x="1224" y="344">22</text>
+    <text class="sig" x="1275" y="344">T+（球发送 +）</text>
+    <text class="dst" x="1480" y="344">→ 模块 R+</text>
+
+    <rect x="1200" y="359" width="48" height="18" rx="4" fill="#7c3aed"/>
+    <text class="pin" x="1224" y="372">24</text>
+    <text class="sig" x="1275" y="372">T−（球发送 −）</text>
+    <text class="dst" x="1480" y="372">→ 模块 R−</text>
+
+    <rect x="1200" y="391" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="404">1</text>
+    <text class="sig" x="1275" y="404">DSK OUTPUT A1</text>
+    <text class="dst" x="1480" y="404">← pin31（ENC1_A）</text>
+    <rect x="1200" y="417" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="430">2</text>
+    <text class="sig" x="1275" y="430">DSK OUTPUT B1</text>
+    <text class="dst" x="1480" y="430">← pin32（ENC1_B）</text>
+    <rect x="1200" y="443" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="456">3</text>
+    <text class="sig" x="1275" y="456">DSK OUTPUT A2</text>
+    <text class="dst" x="1480" y="456">← pin33（ENC2_A）</text>
+    <rect x="1200" y="469" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="482">4</text>
+    <text class="sig" x="1275" y="482">DSK OUTPUT B2</text>
+    <text class="dst" x="1480" y="482">← pin34（ENC2_B）</text>
+    <rect x="1200" y="495" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="508">5</text>
+    <text class="sig" x="1275" y="508">DSK PUSH ENTER</text>
+    <text class="dst" x="1480" y="508">← pin39（KEY_ENTER）</text>
+    <rect x="1200" y="521" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="534">6</text>
+    <text class="sig" x="1275" y="534">MENU</text>
+    <text class="dst" x="1480" y="534">← pin40（KEY_MENU）</text>
+    <rect x="1200" y="547" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="560">7</text>
+    <text class="sig" x="1275" y="560">UFR</text>
+    <text class="dst" x="1480" y="560">← pin37（KEY_UPR）</text>
+    <rect x="1200" y="573" width="48" height="18" rx="4" fill="#2563eb"/>
+    <text class="pin" x="1224" y="586">8</text>
+    <text class="sig" x="1275" y="586">LWR</text>
+    <text class="dst" x="1480" y="586">← pin38（KEY_LWR）</text>
+  </g>
+
+  <text class="term-s" x="1205" y="620">未使用：9~20 悬空 · 继电器触点见下方 25 / 26</text>
+
+  <g filter="url(#sh)">
+    <rect class="card" x="700" y="930" width="360" height="280" rx="14"/>
+  </g>
+  <text class="title" x="722" y="968" font-size="18" fill="#b45309">摩可灵 USB→RS422</text>
+  <text class="sub2" x="722" y="990">CH340 · 由 USB 供电 · 115200 8N1</text>
+  <text class="term-s" x="722" y="1190">差分侧 VCC 不接（接 GND 更稳）</text>
+
+  <rect x="712" y="1018" width="58" height="62" rx="6" fill="#ffedd5" stroke="#ea580c" stroke-width="1.8"/>
+  <text class="term-s" x="741" y="1044" text-anchor="middle" fill="#c2410c">USB</text>
+  <text class="term-s" x="741" y="1060" text-anchor="middle" fill="#c2410c">-A</text>
+
+  <g>
+    <rect x="1060" y="1012" width="20" height="16" rx="3" fill="#16a34a"/>
+    <text class="term" x="1044" y="1024" text-anchor="end" font-weight="700" fill="#15803d">T+</text>
+    <rect x="1060" y="1047" width="20" height="16" rx="3" fill="#16a34a"/>
+    <text class="term" x="1044" y="1059" text-anchor="end" font-weight="700" fill="#15803d">T−</text>
+    <rect x="1060" y="1082" width="20" height="16" rx="3" fill="#7c3aed"/>
+    <text class="term" x="1044" y="1094" text-anchor="end" font-weight="700" fill="#6d28d9">R+</text>
+    <rect x="1060" y="1117" width="20" height="16" rx="3" fill="#7c3aed"/>
+    <text class="term" x="1044" y="1129" text-anchor="end" font-weight="700" fill="#6d28d9">R−</text>
+    <rect x="1060" y="1152" width="20" height="16" rx="3" fill="#cbd5e1"/>
+    <text class="term" x="1044" y="1164" text-anchor="end" fill="#64748b">GND</text>
+    <text class="term-s" x="790" y="1024">→ XS1-21（球接收 +）</text>
+    <text class="term-s" x="790" y="1059">→ XS1-23（球接收 −）</text>
+    <text class="term-s" x="790" y="1094">← XS1-22（球发送 +）</text>
+    <text class="term-s" x="790" y="1129">← XS1-24（球发送 −）</text>
+    <text class="term-s" x="790" y="1164">可选（共地）</text>
+  </g>
+
+  <g filter="url(#sh)">
+    <rect class="card" x="1180" y="930" width="540" height="280" rx="14"/>
+  </g>
+  <text class="title" x="1205" y="968" font-size="18" fill="#9d174d">单路继电器模块</text>
+  <text class="sub2" x="1205" y="990">SRD-03VDC-SL-C（3V 线圈）· 光耦隔离 · 高电平触发</text>
+
+  <rect x="1150" y="1022" width="22" height="16" rx="3" fill="#ea580c"/>
+  <text class="term" x="1188" y="1034" font-weight="700" fill="#c2410c" font-size="13">VCC（DC+）</text>
+  <text class="term-s" x="1300" y="1034" fill="#c2410c" font-size="12" font-weight="700">← GPIO1（P9）pin29（3.3V）</text>
+  <text class="term-s" x="1300" y="1052" fill="#c2410c">严禁 5V；GPIO1 与 GPIO0 的 3.3V 同源</text>
+
+  <rect x="1150" y="1052" width="22" height="16" rx="3" fill="#334155"/>
+  <text class="term" x="1188" y="1064" font-weight="700" fill="#334155" font-size="13">GND（DC−）</text>
+  <text class="term-s" x="1300" y="1064" fill="#334155" font-size="12" font-weight="700">← GPIO1（P9）pin30（GND）</text>
+  <text class="term-s" x="1300" y="1082" fill="#475569">与板卡、轨迹球共地</text>
+
+  <rect x="1290" y="912" width="22" height="16" rx="3" fill="#2563eb"/>
+  <text class="term" x="1301" y="952" text-anchor="middle" font-weight="700" fill="#1d4ed8">IN</text>
+  <text class="term-s" x="1301" y="968" text-anchor="middle">← pin35（RELAY_OUT）</text>
+
+  <rect x="1410" y="912" width="22" height="16" rx="3" fill="#b45309"/>
+  <text class="term" x="1421" y="952" text-anchor="middle" font-weight="700" fill="#92400e">COM</text>
+  <text class="term-s" x="1421" y="968" text-anchor="middle">→ XS1-25（DSO）</text>
+
+  <rect x="1530" y="912" width="22" height="16" rx="3" fill="#92400e"/>
+  <text class="term" x="1541" y="952" text-anchor="middle" font-weight="700" fill="#78350f">NO</text>
+  <text class="term-s" x="1541" y="968" text-anchor="middle">→ XS1-26（DSO_RTN）</text>
+
+  <rect x="1650" y="912" width="22" height="16" rx="3" fill="#e2e8f0"/>
+  <text class="term" x="1661" y="952" text-anchor="middle" fill="#94a3b8">NC</text>
+  <text class="term-s" x="1661" y="968" text-anchor="middle" fill="#94a3b8">悬空</text>
+
+  <text class="term-s" x="1205" y="1105">COM / NO 为无源干接点：吸合时 XS1-25 与 XS1-26 导通，面板识别为 MENU 按下</text>
+  <text class="term" x="1205" y="1140" font-size="12.5" font-weight="700" fill="#c2410c">⚠ VCC 必须 3.3V，严禁接 5V（线圈为 3V）</text>
+  <text class="term-s" x="1205" y="1162">IN 为唯一控制信号，只能接 GPIO0 pin35，不能改到 GPIO1</text>
+  <text class="term-s" x="1205" y="1184">控制逻辑：MENU 按下 → 0x83C0000C bit0=1 → E8 输出高 → 吸合</text>
+
+  <g filter="url(#sh)">
+    <rect class="card" x="40" y="940" width="590" height="232" rx="14"/>
+  </g>
+  <text class="title" x="64" y="976" font-size="17" fill="#1e3a8a">供电分配（轨迹球/编码器取 GPIO0，继电器取 GPIO1）</text>
+  <text class="th" x="64" y="1012">负载</text>
+  <text class="th" x="230" y="1012">正极（+）</text>
+  <text class="th" x="430" y="1012">负极（−）</text>
+  <line x1="60" y1="1022" x2="610" y2="1022" stroke="#e2e8f0"/>
+
+  <text class="sig" x="64" y="1050">轨迹球整机 5V</text>
+  <text class="sig" x="230" y="1050" fill="#b91c1c" font-weight="700">GPIO0 pin11</text>
+  <text class="dst" x="340" y="1050">5V</text>
+  <text class="sig" x="430" y="1050" fill="#334155" font-weight="700">GPIO0 pin12</text>
+  <text class="dst" x="540" y="1050">GND</text>
+
+  <text class="sig" x="64" y="1086">编码器 3.3V</text>
+  <text class="sig" x="230" y="1086" fill="#c2410c" font-weight="700">GPIO0 pin29</text>
+  <text class="dst" x="340" y="1086">3.3V</text>
+  <text class="sig" x="430" y="1086" fill="#334155" font-weight="700">GPIO0 pin30</text>
+  <text class="dst" x="540" y="1086">GND</text>
+
+  <text class="sig" x="64" y="1122">继电器线圈</text>
+  <text class="sig" x="230" y="1122" fill="#c2410c" font-weight="700">GPIO1 pin29</text>
+  <text class="dst" x="340" y="1122">3.3V</text>
+  <text class="sig" x="430" y="1122" fill="#334155" font-weight="700">GPIO1 pin30</text>
+  <text class="dst" x="540" y="1122">GND</text>
+
+  <text class="term-s" x="64" y="1152" fill="#c2410c" font-weight="700">继电器 IN 不属于供电，是信号：GPIO0（P7）pin35（E8）</text>
+
+  <rect x="1220" y="760" width="120" height="40" rx="7" fill="#fef3c7" stroke="#b45309" stroke-width="1.6"/>
+  <text class="term" x="1280" y="778" text-anchor="middle" font-weight="700" fill="#92400e">XS1-25</text>
+  <text class="term-s" x="1280" y="793" text-anchor="middle">DSO（触点 1）</text>
+
+  <rect x="1380" y="760" width="150" height="40" rx="7" fill="#fef3c7" stroke="#92400e" stroke-width="1.6"/>
+  <text class="term" x="1455" y="778" text-anchor="middle" font-weight="700" fill="#78350f">XS1-26</text>
+  <text class="term-s" x="1455" y="793" text-anchor="middle">DSO_RTN（触点 2）</text>
+
+  <g>
+    <rect class="lblbg" x="860" y="158" width="46" height="20" rx="4"/>
+    <text class="lbl" x="883" y="172" text-anchor="middle" fill="#b91c1c">5V</text>
+
+    <rect class="lblbg" x="812" y="180" width="52" height="20" rx="4"/>
+    <text class="lbl" x="838" y="194" text-anchor="middle" fill="#334155">GND</text>
+
+    <rect class="lblbg" x="986" y="206" width="56" height="20" rx="4"/>
+    <text class="lbl" x="1014" y="220" text-anchor="middle" fill="#c2410c">3.3V</text>
+
+    <rect class="lblbg" x="900" y="236" width="52" height="20" rx="4"/>
+    <text class="lbl" x="926" y="250" text-anchor="middle" fill="#334155">GND</text>
+
+    <rect class="lblbg" x="880" y="908" width="330" height="20" rx="4"/>
+    <text class="lbl" x="1045" y="922" text-anchor="middle" fill="#475569">8 芯信号线：ENC1_A/B · ENC2_A/B · ENTER · MENU · UFR · LWR</text>
+
+    <rect class="lblbg" x="880" y="862" width="190" height="20" rx="4"/>
+    <text class="lbl" x="975" y="876" text-anchor="middle" fill="#1d4ed8">RELAY_OUT → 继电器 IN</text>
+
+    <rect class="lblbg" x="712" y="846" width="46" height="20" rx="4"/>
+    <text class="lbl" x="735" y="860" text-anchor="middle" fill="#c2410c">USB</text>
+
+    <rect class="lblbg" x="1290" y="782" width="110" height="20" rx="4"/>
+    <text class="lbl" x="1345" y="796" text-anchor="middle" fill="#92400e">COM → XS1-25</text>
+
+    <rect class="lblbg" x="1470" y="812" width="66" height="20" rx="4"/>
+    <text class="lbl" x="1503" y="826" text-anchor="middle" fill="#78350f">NO → 26</text>
+  </g>
+</svg>
+</div>
+
+<h2>线色图例</h2>
+<div class="legend">
+  <span><i style="background:#eff6ff;border:2px solid #60a5fa;height:13px;width:18px;border-radius:3px"></i>GPIO0（P7）· 信号 + 轨迹球/编码器供电</span>
+  <span><i style="background:#f0fdf4;border:2px solid #16a34a;height:13px;width:18px;border-radius:3px"></i>GPIO1（P9）· 继电器 VCC / GND</span>
+  <span><i style="background:#dc2626"></i>5V 电源</span>
+  <span><i style="background:#ea580c"></i>3.3V 电源 / USB</span>
+  <span><i style="background:#334155"></i>GND 地线</span>
+  <span><i style="background:#16a34a"></i>RS422：轨迹球接收（模块 T+/T−）</span>
+  <span><i style="background:#7c3aed"></i>RS422：轨迹球发送（模块 R+/R−）</span>
+  <span><i style="background:#2563eb"></i>继电器控制信号</span>
+  <span><i style="background:#b45309"></i>继电器触点（COM/NO）</span>
+  <span><i style="background:#64748b"></i>编码器 / 按键 8 芯总线</span>
+  <span><i style="background:#ea580c"></i>继电器供电（GPIO1 pin29 / pin30）</span>
+</div>
+
+<h2>供电分配（速查）</h2>
+<table>
+  <thead>
+    <tr><th>负载</th><th>正极（+）</th><th>负极（−）</th><th>最终接到</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="n">轨迹球整机 5V</td>
+        <td class="n"><b>GPIO0（P7）pin11</b></td>
+        <td class="n"><b>GPIO0（P7）pin12</b></td>
+        <td class="n">XS1-28（+5VD） / XS1-27（GND）</td></tr>
+    <tr><td class="n">编码器 3.3V</td>
+        <td class="n"><b>GPIO0（P7）pin29</b></td>
+        <td class="n"><b>GPIO0（P7）pin30</b></td>
+        <td class="n">XS1-30（+3V3D） / XS1-29（GND）</td></tr>
+    <tr><td class="n">继电器线圈</td>
+        <td class="n"><b>GPIO1（P9）pin29</b></td>
+        <td class="n"><b>GPIO1（P9）pin30</b></td>
+        <td class="n">继电器模块 VCC（DC+） / GND（DC−）</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  <b>继电器 IN 不是供电，是控制信号：</b>GPIO0（P7）<b>pin35（E8）</b> → 继电器 IN。<br>
+  继电器 VCC / GND 取自 <b>GPIO1（P9）pin29 = 3.3V、pin30 = GND</b>（GPIO0 pin29 已被编码器占用）。
+</div>
+
+<h2>连接清单（共 15 条）</h2>
+<table>
+  <thead>
+    <tr><th>#</th><th>起点</th><th>终点</th><th>线色</th><th>说明</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="n">1</td><td class="n">GPIO0 pin11（5V）</td><td class="n">XS1-28（+5VD）</td>
+        <td class="c"><span class="dot" style="background:#dc2626"></span>红</td><td>轨迹球整机供电（约 236mA）</td></tr>
+    <tr><td class="n">2</td><td class="n">GPIO0 pin12（GND）</td><td class="n">XS1-27（GND）</td>
+        <td class="c"><span class="dot" style="background:#334155"></span>深灰</td><td>第一路共地</td></tr>
+    <tr><td class="n">3</td><td class="n">GPIO1（P9）pin30（GND）</td><td class="n">继电器 GND</td>
+        <td class="c"><span class="dot" style="background:#334155"></span>深灰</td><td>与板卡共地</td></tr>
+    <tr><td class="n">4</td><td class="n">GPIO0 pin29（3.3V）</td><td class="n">XS1-30（+3V3D）</td>
+        <td class="c"><span class="dot" style="background:#ea580c"></span>橙</td><td>编码器 3.3V 供电</td></tr>
+    <tr><td class="n">5</td><td class="n">GPIO1（P9）pin29（3.3V）</td><td class="n">继电器 VCC</td>
+        <td class="c"><span class="dot" style="background:#ea580c"></span>橙</td><td><b>严禁 5V</b>；GPIO1 与 GPIO0 的 3.3V 同源</td></tr>
+    <tr><td class="n">6</td><td class="n">GPIO0 pin30（GND）</td><td class="n">XS1-29（GND）</td>
+        <td class="c"><span class="dot" style="background:#334155"></span>深灰</td><td>第二路共地，两路都要接</td></tr>
+    <tr><td class="n">7</td><td class="n">XS1-21（球接收 R+）</td><td class="n">模块 T+</td>
+        <td class="c"><span class="dot" style="background:#16a34a"></span>绿</td><td>模块发 → 球收（必须交叉）</td></tr>
+    <tr><td class="n">8</td><td class="n">XS1-23（球接收 R−）</td><td class="n">模块 T−</td>
+        <td class="c"><span class="dot" style="background:#16a34a"></span>绿</td><td>与第 7 条为一对</td></tr>
+    <tr><td class="n">9</td><td class="n">XS1-22（球发送 T+）</td><td class="n">模块 R+</td>
+        <td class="c"><span class="dot" style="background:#7c3aed"></span>紫</td><td>球发 → 模块收（必须交叉）</td></tr>
+    <tr><td class="n">10</td><td class="n">XS1-24（球发送 T−）</td><td class="n">模块 R−</td>
+        <td class="c"><span class="dot" style="background:#7c3aed"></span>紫</td><td>与第 9 条为一对</td></tr>
+    <tr><td class="n">11</td><td class="n">模块 USB-A 插头</td><td class="n">板卡 USB Host 口</td>
+        <td class="c"><span class="dot" style="background:#ea580c"></span>橙（粗）</td><td>内核 ch341 驱动 → <code>/dev/rs422</code></td></tr>
+    <tr><td class="n">12</td><td class="n">GPIO0 pin35（RELAY_OUT）</td><td class="n">继电器 IN</td>
+        <td class="c"><span class="dot" style="background:#2563eb"></span>蓝</td><td>唯一控制信号，不可改到 GPIO1</td></tr>
+    <tr><td class="n">13</td><td class="n">继电器 COM</td><td class="n">XS1-25（DSO）</td>
+        <td class="c"><span class="dot" style="background:#b45309"></span>棕</td><td>无源干接点</td></tr>
+    <tr><td class="n">14</td><td class="n">继电器 NO</td><td class="n">XS1-26（DSO_RTN）</td>
+        <td class="c"><span class="dot" style="background:#92400e"></span>深棕</td><td>吸合时与 COM 导通</td></tr>
+    <tr><td class="n">15</td><td class="n">GPIO0 pin31/32/33/34<br>pin39/40/37/38</td><td class="n">XS1-1 ~ XS1-8</td>
+        <td class="c"><span class="dot" style="background:#64748b"></span>灰（粗）</td><td>编码器 ×2 + 按键 ×4，8 芯信号线，<b>顺序不能接错</b></td></tr>
+  </tbody>
+</table>
+
+<h2>施工注意事项</h2>
+<div class="warn">
+  <b>1. 差分线必须交叉：</b>球壳丝印的 R/T 是球自身视角，所以「球的 R+（21）接模块 T+」「球的 T+（22）接模块 R+」。若完全不通，先把 21/22 与 23/24 两对整体对调。<br>
+  <b>2. 继电器 VCC 只能 3.3V：</b>线圈是 SRD-03VDC-SL-C（3V），接 5V 会烧。<b>实际接线取 GPIO1（P9）pin29 = 3.3V、pin30 = GND</b>。GPIO0 pin29 已被编码器 3.3V 占用，不要再从那里取电。继电器 IN 必须回 GPIO0 pin35（GPIO1 上没有 E8）。<br>
+  <b>3. XS1-25/26 只接继电器 COM/NO：</b>不接电源，也不要与 XS1-6（MENU 按键）并联。<br>
+  <b>4. 按键顺序不是 37/38/39/40：</b>必须按 XS1-5→pin39、6→pin40、7→pin37、8→pin38 接，否则按键功能错位。<br>
+  <b>5. GPIO0 pin26 / pin28 悬空：</b>原 UART1 EMIO 方案已废弃，不要再接任何东西。<br>
+  <b>6. 两路 GND 都要接：</b>pin12→XS1-27、pin30→XS1-29，保证回流可靠。<br>
+  <b>7. 认准排针丝印：</b>GPIO0 = <b>P7</b>（板卡 Type-C 旁），GPIO1 = <b>P9</b>（按键旁）。两组排针针号相同但功能不同，插线前对着丝印确认，不要把两个 pin29 当成同一个 3.3V 直接串接。
+</div>
+
+<div class="note">
+  <b>上电前用万用表核对：</b>pin29 对 GND 约 3.3V，pin11 对 GND 约 5V，pin35 静态为低（继电器不吸合）；8 路信号对 5V / 3.3V 无短路。上电静置 1 分钟，继电器不应误吸合。
+</div>
+
+<footer>
+  依据文档：<code>fpga/can_integration/接线表_最新_20261114.md</code>、<code>docs/RS422_USB转422_UDP联调说明.md</code>。
+  本图仅表示逻辑连接，实际布线以底板丝印与万用表实测为准。打印建议 A3 横版。
+</footer>
+
+</div>
+</body>
+</html>
